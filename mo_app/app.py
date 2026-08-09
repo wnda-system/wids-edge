@@ -37,6 +37,7 @@ def capture():
     data = request.get_json(silent=True) or {}
     interface = (data.get("interface") or "wlan1mon").strip()
     simulate = bool(data.get("simulate", False))
+    llc_snap_dispatch = bool(data.get("llc_snap_dispatch", False))
 
     raw_duration = data.get("duration", DEFAULT_DURATION)
     duration = int(raw_duration) if raw_duration not in (None, "") else None
@@ -50,7 +51,8 @@ def capture():
     if duration is None and max_packets is None:
         return jsonify({"error": "Choose at least one stop condition: time, packet count, or both."}), 400
 
-    session = start_capture(interface, simulate, duration, max_packets, CAPTURES_DIR)
+    session = start_capture(interface, simulate, duration, max_packets, CAPTURES_DIR,
+                             llc_snap_dispatch=llc_snap_dispatch)
     SESSIONS[session.id] = session
     return jsonify({"capture_id": session.id})
 

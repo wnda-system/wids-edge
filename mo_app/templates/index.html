@@ -171,6 +171,18 @@
       <label for="simulate">Simulate capture (no hardware needed — for testing)</label>
     </div>
 
+    <label for="parserMode">Field extraction</label>
+    <select id="parserMode">
+      <option value="original" selected>Original (current default behavior)</option>
+      <option value="llc_snap">LLC/SNAP dispatch (experimental) — also decode IP/ARP/EAPOL out of unencrypted Data frames' LLC/SNAP payload</option>
+    </select>
+    <div style="font-size:12px; color:var(--gray); margin:-12px 0 16px;">
+      "Original" only extracts app-layer fields (tcp./dns./http./arp./eapol./etc) when scapy's
+      own dissection already found them. "LLC/SNAP dispatch" adds a manual fallback that reads
+      the LLC/SNAP header directly off unencrypted Data frames scapy didn't already dissect —
+      same wlan.*/radiotap.* fields either way. Run both against the same traffic to compare.
+    </div>
+
     <button id="captureBtn">Capture</button>
     <button id="stopBtn">Stop capture now</button>
 
@@ -179,6 +191,7 @@
     <div class="summary" id="summary">
       <div class="row"><span class="label">Packets captured</span><span id="sumPackets">–</span></div>
       <div class="row"><span class="label">File</span><span id="sumFile">–</span></div>
+      <div class="row"><span class="label">Field extraction</span><span id="sumParserMode">–</span></div>
       <div class="row"><span class="label">Finished</span><span id="sumTime">–</span></div>
       <a href="#" class="download" id="downloadLink" style="display:none;">Download CSV</a>
     </div>
@@ -191,6 +204,7 @@ const errorBox = document.getElementById('errorBox');
 const summary = document.getElementById('summary');
 const sumPackets = document.getElementById('sumPackets');
 const sumFile = document.getElementById('sumFile');
+const sumParserMode = document.getElementById('sumParserMode');
 const sumTime = document.getElementById('sumTime');
 const downloadLink = document.getElementById('downloadLink');
 
@@ -267,6 +281,7 @@ btn.addEventListener('click', async () => {
 
   const interfaceName = document.getElementById('interface').value.trim();
   const simulate = document.getElementById('simulate').checked;
+  const llcSnapDispatch = document.getElementById('parserMode').value === 'llc_snap';
 
   let durationSeconds = null;
   if (limitByTime.checked) {
@@ -288,6 +303,7 @@ btn.addEventListener('click', async () => {
       body: JSON.stringify({
         interface: interfaceName,
         simulate: simulate,
+        llc_snap_dispatch: llcSnapDispatch,
         duration: durationSeconds,
         max_packets: maxPackets
       })
@@ -340,6 +356,7 @@ async function pollStatus(captureId) {
     summary.classList.add('visible');
     sumPackets.textContent = data.packets_captured;
     sumFile.textContent = data.csv_filename || '–';
+    sumParserMode.textContent = data.llc_snap_dispatch ? 'LLC/SNAP dispatch (experimental)' : 'Original';
     sumTime.textContent = data.finished_at ? new Date(data.finished_at * 1000).toLocaleString() : '–';
     downloadLink.href = `/download/${captureId}`;
     downloadLink.style.display = 'inline-block';
