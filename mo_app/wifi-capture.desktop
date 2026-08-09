@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WiFi Packet Capture
+Comment=Start the WiFi packet capture tool
+Exec=bash -c 'cd /home/molecule/mo_app && ./run.sh; echo; read -p "Press Enter to close this window..."'
+Icon=network-wireless
+Terminal=true
+Categories=Network;

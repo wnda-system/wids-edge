@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WiFi Packet Capture</title>
+<style>
+  :root {
+    --blue: #2563eb;
+    --green: #16a34a;
+    --red: #dc2626;
+    --gray: #6b7280;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --border: #e2e8f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: #1e293b;
+    margin: 0;
+    padding: 40px 16px;
+  }
+  .card {
+    max-width: 560px;
+    margin: 0 auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 32px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--gray); font-size: 14px; margin-bottom: 24px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #334155; }
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+    background: white;
+  }
+  .field-row { display: flex; gap: 8px; }
+  .field-row input[type="number"] { flex: 2; }
+  .field-row select { flex: 1; }
+  button#stopBtn {
+    width: 100%;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--red);
+    background: white;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 10px;
+    display: none;
+  }
+  button#stopBtn.visible { display: block; }
+  button#stopBtn:hover { background: #fef2f2; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
+  .checkbox-row label { margin: 0; font-weight: 500; }
+  button#captureBtn {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    color: white;
+    background: var(--blue);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button#captureBtn:disabled { background: #93c5fd; cursor: not-allowed; }
+  button#captureBtn.done { background: var(--green); }
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.5);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .summary {
+    margin-top: 20px;
+    padding: 16px;
+    background: #f1f5f9;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.6;
+    display: none;
+  }
+  .summary.visible { display: block; }
+  .summary .row { display: flex; justify-content: space-between; }
+  .summary .label { color: var(--gray); }
+  .error-box {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: var(--red);
+    border-radius: 8px;
+    font-size: 14px;
+    display: none;
+  }
+  .error-box.visible { display: block; }
+  a.download {
+    display: inline-block;
+    margin-top: 14px;
+    color: var(--blue);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  a.download:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>WiFi Packet Capture</h1>
+    <div class="subtitle">Capture live WiFi traffic and export it as a CSV file.</div>
+
+    <label for="interface">
+      Capture interface
+      <a href="#" id="helpToggle" style="font-weight:400; font-size:12px; margin-left:6px;">(how do I find this?)</a>
+    </label>
+    <input type="text" id="interface" value="wlx1cbfce71ebe7">
+
+    <div id="helpPanel" style="display:none; background:#f1f5f9; border-radius:8px; padding:14px 16px; margin:-8px 0 16px; font-size:13px; line-height:1.7;">
+      Open a terminal on this computer and run, in order:
+      <ol style="margin:8px 0 4px; padding-left:20px;">
+        <li><code>iw dev</code> — lists your WiFi adapters and interface names.</li>
+        <li><code>sudo ip link set &lt;interface-name&gt; down</code></li>
+        <li><code>sudo iw dev &lt;interface-name&gt; set type monitor</code></li>
+        <li><code>sudo ip link set &lt;interface-name&gt; up</code></li>
+        <li>Run <code>iw dev</code> again to confirm — the interface should now show <code>type monitor</code>. That exact name goes in the box above.</li>
+      </ol>
+      Note: this locks the adapter to one WiFi channel, so it will only see traffic on that channel.
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="limitByTime" checked>
+      <label for="limitByTime">Stop after a time limit</label>
+    </div>
+    <div class="field-row">
+      <input type="number" id="duration" value="15" min="1">
+      <select id="durationUnit">
+        <option value="s" selected>seconds</option>
+        <option value="m">minutes</option>
+        <option value="h">hours</option>
+        <option value="d">days</option>
+      </select>
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="limitByPackets" checked>
+      <label for="limitByPackets">Stop after a packet count</label>
+    </div>
+    <input type="number" id="maxPackets" value="200" min="1" max="100000">
+    <div id="limitHint" style="font-size:12px; color:var(--gray); margin:-12px 0 16px;">Pick at least one — whichever limit is hit first stops the capture. You can also stop manually at any time.</div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="simulate">
+      <label for="simulate">Simulate capture (no hardware needed — for testing)</label>
+    </div>
+
+    <button id="captureBtn">Capture</button>
+    <button id="stopBtn">Stop capture now</button>
+
+    <div class="error-box" id="errorBox"></div>
+
+    <div class="summary" id="summary">
+      <div class="row"><span class="label">Packets captured</span><span id="sumPackets">–</span></div>
+      <div class="row"><span class="label">File</span><span id="sumFile">–</span></div>
+      <div class="row"><span class="label">Finished</span><span id="sumTime">–</span></div>
+      <a href="#" class="download" id="downloadLink" style="display:none;">Download CSV</a>
+    </div>
+  </div>
+
+<script>
+const btn = document.getElementById('captureBtn');
+const stopBtn = document.getElementById('stopBtn');
+const errorBox = document.getElementById('errorBox');
+const summary = document.getElementById('summary');
+const sumPackets = document.getElementById('sumPackets');
+const sumFile = document.getElementById('sumFile');
+const sumTime = document.getElementById('sumTime');
+const downloadLink = document.getElementById('downloadLink');
+
+const UNIT_SECONDS = { s: 1, m: 60, h: 3600, d: 86400 };
+
+let polling = null;
+let currentCaptureId = null;
+
+document.getElementById('helpToggle').addEventListener('click', (e) => {
+  e.preventDefault();
+  const panel = document.getElementById('helpPanel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+});
+
+const limitByTime = document.getElementById('limitByTime');
+const limitByPackets = document.getElementById('limitByPackets');
+const durationInput = document.getElementById('duration');
+const durationUnitSelect = document.getElementById('durationUnit');
+const maxPacketsInput = document.getElementById('maxPackets');
+
+function syncLimitInputs() {
+  durationInput.disabled = !limitByTime.checked;
+  durationUnitSelect.disabled = !limitByTime.checked;
+  maxPacketsInput.disabled = !limitByPackets.checked;
+  [durationInput, durationUnitSelect, maxPacketsInput].forEach(el => {
+    el.style.opacity = el.disabled ? 0.5 : 1;
+  });
+}
+
+function enforceAtLeastOneLimit(changed) {
+  if (!limitByTime.checked && !limitByPackets.checked) {
+    // don't allow turning off the last remaining limit
+    changed.checked = true;
+  }
+  syncLimitInputs();
+}
+
+limitByTime.addEventListener('change', () => enforceAtLeastOneLimit(limitByTime));
+limitByPackets.addEventListener('change', () => enforceAtLeastOneLimit(limitByPackets));
+syncLimitInputs();
+
+function setBtnCapturing() {
+  btn.disabled = true;
+  btn.classList.remove('done');
+  btn.innerHTML = '<span class="spinner"></span>Capturing…';
+}
+
+function setBtnIdle() {
+  btn.disabled = false;
+  btn.classList.remove('done');
+  btn.textContent = 'Capture';
+}
+
+function setBtnDone(count) {
+  btn.disabled = false;
+  btn.classList.add('done');
+  btn.textContent = `Done ✓ (${count} packets)`;
+}
+
+function showError(msg) {
+  errorBox.textContent = msg;
+  errorBox.classList.add('visible');
+}
+
+function hideError() {
+  errorBox.classList.remove('visible');
+}
+
+btn.addEventListener('click', async () => {
+  hideError();
+  summary.classList.remove('visible');
+  downloadLink.style.display = 'none';
+  setBtnCapturing();
+
+  const interfaceName = document.getElementById('interface').value.trim();
+  const simulate = document.getElementById('simulate').checked;
+
+  let durationSeconds = null;
+  if (limitByTime.checked) {
+    const durationValue = parseFloat(durationInput.value) || 15;
+    const durationUnit = durationUnitSelect.value;
+    durationSeconds = Math.max(1, Math.round(durationValue * UNIT_SECONDS[durationUnit]));
+  }
+
+  let maxPackets = null;
+  if (limitByPackets.checked) {
+    maxPackets = parseInt(maxPacketsInput.value, 10) || 200;
+  }
+
+  let resp, data;
+  try {
+    resp = await fetch('/capture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interface: interfaceName,
+        simulate: simulate,
+        duration: durationSeconds,
+        max_packets: maxPackets
+      })
+    });
+    data = await resp.json();
+  } catch (e) {
+    showError('Could not reach the server: ' + e);
+    setBtnIdle();
+    return;
+  }
+
+  if (!resp.ok) {
+    showError(data.error || 'Failed to start capture.');
+    setBtnIdle();
+    return;
+  }
+
+  currentCaptureId = data.capture_id;
+  stopBtn.classList.add('visible');
+  polling = setInterval(() => pollStatus(currentCaptureId), 700);
+});
+
+stopBtn.addEventListener('click', async () => {
+  if (!currentCaptureId) return;
+  stopBtn.disabled = true;
+  stopBtn.textContent = 'Stopping…';
+  try {
+    await fetch(`/stop/${currentCaptureId}`, { method: 'POST' });
+  } catch (e) {
+    // status polling will still pick up the final state
+  }
+});
+
+async function pollStatus(captureId) {
+  let resp, data;
+  try {
+    resp = await fetch(`/status/${captureId}`);
+    data = await resp.json();
+  } catch (e) {
+    return;
+  }
+  if (!resp.ok) return;
+
+  if (data.status === 'capturing') {
+    btn.innerHTML = `<span class="spinner"></span>Capturing… (${data.packets_captured} packets)`;
+  } else if (data.status === 'done') {
+    clearInterval(polling);
+    resetStopBtn();
+    setBtnDone(data.packets_captured);
+    summary.classList.add('visible');
+    sumPackets.textContent = data.packets_captured;
+    sumFile.textContent = data.csv_filename || '–';
+    sumTime.textContent = data.finished_at ? new Date(data.finished_at * 1000).toLocaleString() : '–';
+    downloadLink.href = `/download/${captureId}`;
+    downloadLink.style.display = 'inline-block';
+  } else if (data.status === 'error') {
+    clearInterval(polling);
+    resetStopBtn();
+    setBtnIdle();
+    showError(data.error || 'Capture failed.');
+  }
+}
+
+function resetStopBtn() {
+  stopBtn.classList.remove('visible');
+  stopBtn.disabled = false;
+  stopBtn.textContent = 'Stop capture now';
+}
+</script>
+</body>
+</html>

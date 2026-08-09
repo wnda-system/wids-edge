@@ -1,0 +1,17 @@
+# Lets you launch the WiFi Packet Capture app without typing your sudo
+# password every time — scoped to exactly this one command, nothing else.
+# This does NOT store your password anywhere; it's a standard sudo policy.
+#
+# Install (validates syntax before applying, so a typo can't break sudo):
+#   sudo visudo -cf /home/molecule/mo_app/wifi-capture-sudoers && \
+#   sudo cp /home/molecule/mo_app/wifi-capture-sudoers /etc/sudoers.d/wifi-capture && \
+#   sudo chmod 0440 /etc/sudoers.d/wifi-capture
+#
+# Uninstall:
+#   sudo rm /etc/sudoers.d/wifi-capture
+#
+# After installing, run.sh (and the desktop icon) will launch with no
+# password prompt. If you ever move this folder, update the path below to
+# match and reinstall.
+
+molecule ALL=(root) NOPASSWD: /home/molecule/mo_app/venv/bin/python3 /home/molecule/mo_app/app.py

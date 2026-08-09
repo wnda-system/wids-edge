@@ -1,0 +1,16 @@
+# Gives your USB capture adapter (Techkey AC1200, MAC 1c:bf:ce:71:eb:e7)
+# a short, stable name: "capture0" instead of "wlx1cbfce71ebe7".
+#
+# Install:
+#   sudo cp 71-rename-wifi-capture.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#   unplug and replug the adapter (or reboot) for the new name to take effect
+#
+# After this, use "capture0" as the interface name everywhere (in the app,
+# and in airmon-ng / iw commands).
+#
+# If you set up /etc/NetworkManager/conf.d/99-unmanaged-wlx.conf earlier
+# referencing wlx1cbfce71ebe7, update it to use "capture0" instead.
+
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="1c:bf:ce:71:eb:e7", NAME="capture0"
