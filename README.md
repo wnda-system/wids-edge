@@ -1,136 +1,115 @@
-# Wireless Network Data Collection and Analysis System
+# wids-edge
 
-โปรเจคนี้เป็นระบบสำหรับ **เก็บข้อมูลเครือข่ายไร้สาย (Wi-Fi)**  โดยใช้ **Mini PC** ทำหน้าที่เป็นเครื่อง **Wi-Fi Monitor Mode Sniffer**  เพื่อดักจับ packet จากอากาศ และบันทึกข้อมูลออกมาในรูปแบบไฟล์ **CSV**  สำหรับนำไปวิเคราะห์ต่อ เช่น monitoring, analysis หรือ machine learning
+Software for the **capture device** of [WNDA System](https://github.com/wnda-system): a mini PC with a USB Wi-Fi adapter in monitor mode that passively listens to 802.11 traffic and detects anomalies on site.
 
----
+> 🚧 **Status:** capture, per-second features and on-device detection run today as a standalone service. Integration with the central backend is in development.
 
-## Project Overview
+## What it does today
 
-ระบบนี้ถูกออกแบบมาเพื่อรันบน **Mini PC (Ubuntu Server)**  ที่ติดตั้ง **USB Wi-Fi Adapter ซึ่งรองรับ Monitor Mode**
+| Capability | Where |
+|---|---|
+| Capture 802.11 frames in monitor mode and extract Radiotap, MAC-layer and selected upper-layer fields | `mo_app/capture.py` |
+| One-click captures to CSV, with optional attack ground-truth labelling, through a local web UI | `mo_app/app.py`, `templates/index.html` |
+| Continuous monitoring: raw frames saved in 5-minute gzip CSV chunks with a JSON sidecar (interface, channel, versions, git revision) | `mo_app/monitor.py` |
+| 36 features per one-second window (no MAC or IP addresses) | `mo_app/analysis/features.py` |
+| Live anomaly detection with rule-based and learned detectors, a growing baseline and periodic refits; alerts written to `alerts.jsonl` and shown at `/monitor` | `mo_app/monitor.py`, `analysis/detector.py`, `detection_rules.md` |
+| Optional remote model ("Model C") queried in shadow mode over an SSH tunnel | `mo_app/model_c_client.py`, `ops/model-c-tunnel.service` |
+| Runs as a systemd service, resumes monitoring after a restart | `mo_app/wifi-capture.service` |
+| Freeze diagnostics and automatic reboot on kernel hang | `mo_app/ops/` |
 
-Mini PC จะทำหน้าที่:
-- ดักจับ Wi-Fi packet จากอากาศ (ไม่ต้องเชื่อมต่อ AP)
-- อ่านข้อมูลจาก Radiotap และ 802.11 frame
-- แปลงข้อมูลเป็นโครงสร้างที่ใช้งานได้
-- บันทึกข้อมูลเป็นไฟล์ CSV แบบต่อเนื่อง
+## Planned integration with WNDA System
 
-เหมาะสำหรับ:
-- Wi-Fi monitoring
-- Network analysis
-- Research / Experiment
-- Data collection สำหรับ ML / AI
-
----
-
-## What You Get From This Project
-
-หลังจากรันระบบ คุณจะได้:
-- ข้อมูล Wi-Fi packet ระดับ Monitor Mode
-- Metadata จาก Radiotap เช่น RSSI, Channel, Frequency, MCS
-- ข้อมูล MAC / BSSID / Frame type
-- ไฟล์ CSV ที่สามารถนำไป:
-  - เปิดใน Excel / Pandas
-  - ทำ Dashboard
-  - วิเคราะห์คุณภาพเครือข่าย
-  - ใช้เป็น dataset
-
----
-
-## Project Structure
-
-```text
-wifi-sniffer/
-├── src/ # โค้ด Python สำหรับ sniff และ parse packet
-├── data/ # ข้อมูลที่ได้หลังจากรันโค้ด (CSV)
-├── logs/ # log การทำงานของระบบ
-└── README.md
+```
+Wi-Fi traffic ──► sniffer ──► feature windows (every ~1 s) ──► wids-backend
+                     │
+                     └──► rolling raw captures ──► MinIO (via presigned URL)
 ```
 
----
+| Item | Status |
+|---|---|
+| Send feature windows to `wids-backend`, buffering locally when offline | 🚧 Planned |
+| Align the feature set with the model-training pipeline (`features_v3`) | 🚧 Planned |
+| Upload raw capture chunks to object storage | 🚧 Planned |
+| Send a heartbeat to the backend every minute (status, CPU, disk, clock offset) | 🚧 Planned |
+| Pseudonymise MAC addresses with HMAC-SHA256 before anything leaves the device | 🚧 Planned |
+| Replay recorded captures into the system as a virtual device | 🚧 Planned |
 
-## Folder Description
+## Repository layout
 
-### src/
-โฟลเดอร์สำหรับเก็บ **source code**
-
-ตัวอย่างไฟล์:
-- `sniff.py` – สคริปต์หลักสำหรับ:
-  - จับ Wi-Fi packet
-  - parse Radiotap / Dot11
-  - บันทึกข้อมูลลง CSV
-
-**วิธีรันโค้ด**
-```bash
-cd src
-sudo python3 sniff.py
 ```
-
----
-
-### data/
-
-โฟลเดอร์สำหรับเก็บ ข้อมูลที่ได้หลังจากรันโค้ด
-
-ลักษณะไฟล์:
-- `wifi_packets_YYYYMMDD_HHMMSS.csv`
-
-ข้อมูลภายใน CSV เช่น:
-
-- timestamp
-- channel / frequency
-- RSSI
-- BSSID / MAC address
-- frame type / subtype
-- QoS / retry flag
-
----
-
-### logs/
-
-โฟลเดอร์สำหรับเก็บ log การทำงานของระบบ
-
-ใช้สำหรับ:
-
-- debug ปัญหา
-- ตรวจสอบสถานะการรัน
-- เก็บ error หรือ warning ในอนาคต
-
----
+mo_app/
+  app.py, capture.py        web UI and frame capture / field extraction
+  monitor.py                continuous capture, features, detection, alerts
+  analysis/                 feature extraction, detectors, offline evaluation, Model C checks
+  model_c_client.py         client for the remote model (shadow mode)
+  ops/                      systemd units and system settings for the sensor (see ops/README.md)
+  test_vectors/             small synthetic captures for tests
+  templates/                web UI pages
+  *.md                      design notes: detection rules, anomaly detection, Model C plans
+wifi-sniffer/               earlier command-line sniffer (kept for reference)
+```
 
 ## Requirements
 
-- Ubuntu Server
-- Mini PC
-- USB Wi-Fi Adapter (รองรับ Monitor Mode)
-- Python 3
-- Scapy
+- Ubuntu (tested on a Celeron N4000 mini PC, 8 GB RAM)
+- USB Wi-Fi adapter that supports monitor mode
+- Python 3.10+
+- Root privileges for packet capture
 
-ติดตั้ง Scapy:
+## Quick start
+
+Put the adapter into monitor mode:
 
 ```bash
-sudo apt install python3-scapy
+iw dev                                   # find the adapter name
+sudo ip link set <interface> down
+sudo iw dev <interface> set type monitor
+sudo ip link set <interface> up
 ```
----
 
-## Notes
+Run the app once by hand:
 
-- ระบบนี้ใช้ Monitor Mode ดังนั้น Wi-Fi interface จะไม่เชื่อมต่อกับ AP
-- ข้อมูลบาง field อาจว่าง (None) ขึ้นกับชนิด frame และ driver ของ Wi-Fi adapter
-- แนะนำให้ปิด wpa_supplicant เพื่อป้องกัน interface down เอง
+```bash
+cd mo_app
+./run.sh
+```
 
----
-## Author
-Project developed by
+Or install it as a service (recommended on the sensor):
 
-*Naran Wongvuttisaroj*
-*Boonyapon Boontub*
+```bash
+sudo install -m 644 mo_app/wifi-capture.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now wifi-capture
+```
 
----
+Edit the paths inside `wifi-capture.service` if the repository lives elsewhere. Do not run `./run.sh` while the service is running; both use port 5000.
 
-## Future Improvements
+See [`mo_app/README.md`](mo_app/README.md) and [`mo_app/ops/README.md`](mo_app/ops/README.md) for passwordless launch, simulation mode, the Model C tunnel and troubleshooting.
 
-- Run as systemd service (auto start on boot)
-- Real-time dashboard
-- API export
-- Data aggregation / filtering
-- Machine learning pipeline
+## Configuration outside the repository
+
+Secrets and machine-specific values never go into git. They live on the sensor:
+
+| File | Contents | Template |
+|---|---|---|
+| `/etc/wifi-capture/model_c.json` | Model C URL and on/off switch | `mo_app/ops/model_c.json.example` |
+| `/etc/wifi-capture/model_c.token` | Model C bearer token (mode 600) | — |
+| `/etc/wifi-capture/tunnel.env` | `TUNNEL_TARGET=<user>@<host>` for the SSH tunnel | `mo_app/ops/tunnel.env.example` |
+
+## Operating notes
+
+- **Lock the channel** to the access point under observation. Channel hopping breaks per-second feature windows.
+- **Keep the clock in sync** with NTP. Alerts and field-test ground truth depend on accurate timestamps.
+- The web UI runs as root and has no login. **Do not expose it on untrusted networks.**
+- Raw captures contain real MAC addresses. Never commit them to this repository.
+- The built-in Realtek `rtw88` Wi-Fi card has caused hard freezes on this hardware; see `mo_app/ops/README.md` for the mitigations in place.
+
+## Contributing
+
+- Branch from `dev`, open a pull request back to `dev`. `main` receives releases only.
+- Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:` …).
+- Feature branches are squash-merged into `dev`; `dev` is merged into `main` with a merge commit.
+
+## Team
+
+- Naran Wongvuttisaroj
+- Boonyapon Boontub
