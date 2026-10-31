@@ -9,3 +9,11 @@ captures/
 *.csv.gz
 *.jsonl
 venv/
+venv/
+.venv/
+.claude/
+.env
+*.pcap
+!mo_app/test_vectors/*.pcap
+captures/
+*.token
