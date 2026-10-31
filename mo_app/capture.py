@@ -8,13 +8,17 @@ Two capture backends:
                is attached.
 
 Extracted columns follow wifi_capture_poc_spec.md "Fields to attempt extracting".
-Any field that can't be pulled from a given packet is written as -1.
+Any field that can't be pulled from a given packet is MISSING (-1) in memory
+and written to the CSV as an empty cell (see RAW_SCHEMA_VERSION).
 """
 
 import csv
+import gzip
+import json
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
 import threading
@@ -48,6 +52,7 @@ FIELD_ORDER = [
     "wlan.fc.type", "wlan.fc.subtype", "wlan.fc.retry", "wlan.fc.protected",
     "wlan.fc.frag", "wlan.fc.order", "wlan.fc.moredata", "wlan.fc.pwrmgt", "wlan.fc.ds",
     "wlan.duration", "wlan.seq", "wlan.ssid", "wlan.da",
+    "wlan.ra", "wlan.ta", "wlan.sa", "wlan.bssid",
     "radiotap.channel.freq", "radiotap.datarate", "radiotap.length", "radiotap.mactime",
     "radiotap.channel.flags.cck", "radiotap.channel.flags.ofdm",
     "radiotap.present.tsft", "radiotap.timestamp.ts",
@@ -73,14 +78,18 @@ FIELD_ORDER = [
     # Capabilities field, reached by walking past its variable-length
     # cipher-suite and AKM-suite lists first.
     "wlan.rsn.capabilities.mfpc",
-    # arp (description is derived from opcode + a transient sender/target IP
-    # comparison — the IPs themselves are never stored as a column, only used
-    # in-memory to classify the frame, consistent with the project's rule
-    # against capturing identifier columns)
+    # arp
     "arp.opcode", "arp.hw.type", "arp.proto.type", "arp.hw.size", "arp.proto.size",
     "arp.description",
+    # ARP sender/target addresses — identifier columns, like wlan.da: captured
+    # so ARP spoofing (one IP answered by a new MAC) can be detected, but
+    # excluded from any model input per the project's identifier rule.
+    "arp.src.hw_mac", "arp.src.proto_ipv4", "arp.dst.hw_mac", "arp.dst.proto_ipv4",
     # eapol
     "eapol.type", "eapol.len", "eapol.keydes.key_len", "eapol.keydes.replay_counter",
+    # 4-way handshake message number 1-4, inferred from Key Information bits
+    # the way Wireshark does it (see extract_fields)
+    "eapol.keydes.msgnr",
     # ip
     "ip.version",
     # tcp (checksum.status is a "Good"/"Bad" string from actually recomputing
@@ -174,13 +183,107 @@ FIELD_ORDER = [
 
 MISSING = -1
 
+# Version of the raw CSV format (recorded in each file's .json sidecar).
+#   1: missing values written as "-1"
+#   2: missing values written as "" (empty); eapol.keydes.msgnr column added
+#   3: "field" capture profile only — wlan.da is the destination address by
+#      the DS bits (DS 0/2: addr1, DS 1/3: addr3; none on control frames),
+#      not the raw addr1. Every other column means the same as in 2.
+RAW_SCHEMA_VERSION = 2
+FIELD_RAW_SCHEMA_VERSION = 3
+
+# Capture profiles on the capture page. "default" is what we use every day;
+# "field" is for field experiments compared against AWID3 by the training
+# side: channel must be set, everything is written to one continuous gzip
+# file as each second completes (no in-memory buffer), wlan.da follows the
+# DS bits (schema 3), and the attack periods go in a ground_truth.csv.
+PROFILES = ("default", "field")
+GROUND_TRUTH_FIELDS = ["start_epoch", "end_epoch", "attack", "notes"]
+# attack names as AWID3 labels them, so ground truth lines up with its classes
+FIELD_ATTACKS = ["Deauth", "Disas", "(Re)Assoc", "RogueAP", "Evil_Twin", "Krack", "Kr00k", "SSDP", "Other"]
+
+
+def csv_row(row):
+    """Copy of `row` for writing: MISSING becomes "" so a string column like
+    wlan.ssid can't read back as a real "-1" value. In memory MISSING stays -1
+    (the comparisons everywhere rely on it), so never modify the row itself."""
+    return {k: ("" if type(v) is int and v == MISSING else v) for k, v in row.items()}
+
+
+def _git_revision():
+    """Commit of the running code, "+dirty" if tracked files were changed.
+    Run as root on a repo owned by the user, so git needs safe.directory."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    git = ["git", "-c", "safe.directory=*", "-C", here]
+    try:
+        head = subprocess.run(git + ["rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
+        if head.returncode != 0:
+            return None
+        dirty = subprocess.run(git + ["status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, timeout=10)
+        return head.stdout.strip() + ("+dirty" if dirty.stdout.strip() else "")
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+GIT_REVISION = _git_revision()   # once at import = the code this process runs
+
+
+def iface_channel_info(iface):
+    """What the adapter is really tuned to, from `iw dev <iface> info`:
+    {"channel": 100, "freq_mhz": 5500, "width_mhz": 40, "center1_mhz": 5510}
+    (keys missing if not reported), or None if iw fails."""
+    try:
+        out = subprocess.run(["iw", "dev", iface, "info"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    m = re.search(r"channel (\d+) \((\d+) MHz\)(?:, width: (\d+) MHz)?(?:, center1: (\d+) MHz)?", out.stdout)
+    if not m:
+        return {}
+    keys = ("channel", "freq_mhz", "width_mhz", "center1_mhz")
+    return {k: int(v) for k, v in zip(keys, m.groups()) if v is not None}
+
+
+def set_channel(iface, channel, width=None):
+    """Tune the adapter and check it took. width is iw's word (HT20, HT40+,
+    HT40-, 80MHz) or None for the driver default. Return (ok, message, info)."""
+    cmd = ["iw", "dev", iface, "set", "channel", str(channel)] + ([width] if width else [])
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"could not set channel: {e}", None
+    if r.returncode != 0:
+        return False, f"could not set channel {channel} {width or ''}: {r.stderr.strip()}", None
+    info = iface_channel_info(iface)
+    if not info or info.get("channel") != int(channel):
+        return False, f"set channel {channel} but the adapter reports {info}", info
+    return True, "ok", info
+
+
+def sidecar_path(csv_path):
+    """capture_X.csv(.gz) -> capture_X.json"""
+    base = csv_path[:-3] if csv_path.endswith(".gz") else csv_path
+    return base[:-4] + ".json" if base.endswith(".csv") else base + ".json"
+
+
+def write_sidecar(csv_path, meta):
+    """Write the .json describing how a raw CSV was captured (atomically)."""
+    path = sidecar_path(csv_path)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(meta, f, indent=1)
+    os.replace(tmp, path)
+
 # Columns considered "app/transport-layer" for the has_app_features indicator
 # (mirrors params.md's has_app_features: true if any non-MAC-layer field was
 # actually observed on this packet).
 _APP_FEATURE_COLS = [
     "arp.opcode", "arp.hw.type", "arp.proto.type", "arp.hw.size", "arp.proto.size",
     "arp.description",
-    "eapol.type", "eapol.len", "eapol.keydes.key_len", "eapol.keydes.replay_counter", "ip.version",
+    "eapol.type", "eapol.len", "eapol.keydes.key_len", "eapol.keydes.replay_counter",
+    "eapol.keydes.msgnr", "ip.version",
     "tcp.flags.ack", "tcp.flags.syn", "tcp.flags.fin", "tcp.flags.reset", "tcp.flags.push",
     "tcp.analysis.retransmission", "tcp.checksum.status",
     "dns.flags.response", "dns.count.queries", "dns.count.answers", "dns.count.auth_rr",
@@ -221,6 +324,7 @@ _MAC_FEATURE_COLS = [
     "wlan.fc.type", "wlan.fc.subtype", "wlan.fc.retry", "wlan.fc.protected",
     "wlan.fc.frag", "wlan.fc.order", "wlan.fc.moredata", "wlan.fc.pwrmgt", "wlan.fc.ds",
     "wlan.duration", "wlan.seq", "wlan.ssid", "wlan.da",
+    "wlan.ra", "wlan.ta", "wlan.sa", "wlan.bssid",
     "radiotap.channel.freq", "radiotap.datarate", "radiotap.length", "radiotap.mactime",
     "radiotap.channel.flags.cck", "radiotap.channel.flags.ofdm",
     "radiotap.present.tsft", "radiotap.timestamp.ts",
@@ -274,6 +378,56 @@ def check_monitor_mode(iface: str):
     return True, "ok"
 
 
+def set_monitor_mode(iface: str):
+    """Down -> switch to monitor mode -> up, the exact three commands the
+    UI's help panel used to ask users to run by hand. Modern `iw`-based
+    monitor mode keeps the interface's own name (unlike the old airmon-ng
+    convention of renaming e.g. wlan0 -> wlan0mon), so the name the caller
+    passed in is still correct afterward.
+
+    Requires root/CAP_NET_ADMIN, same as the app already needs for a real
+    capture — this is not a new privilege requirement.
+
+    Return (ok: bool, message: str). On success, message is "ok" and the
+    interface has been verified (via check_monitor_mode) to actually be in
+    monitor mode afterward — not just "the commands returned 0", since
+    something else managing the interface (NetworkManager, wpa_supplicant)
+    can silently revert the change.
+    """
+    if shutil.which("ip") is None or shutil.which("iw") is None:
+        return False, "The 'ip'/'iw' commands are not installed."
+    if not iface:
+        return False, "Interface name is required."
+
+    steps = [
+        (["ip", "link", "set", iface, "down"], f"bringing '{iface}' down"),
+        (["iw", "dev", iface, "set", "type", "monitor"], f"switching '{iface}' to monitor mode"),
+        (["ip", "link", "set", iface, "up"], f"bringing '{iface}' back up"),
+    ]
+    for cmd, description in steps:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except FileNotFoundError:
+            return False, f"Command not found while {description}."
+        except subprocess.TimeoutExpired:
+            return False, f"Timed out while {description}."
+        if out.returncode != 0:
+            detail = out.stderr.strip() or out.stdout.strip() or "unknown error"
+            hint = ""
+            if "Operation not permitted" in detail or "permission" in detail.lower():
+                hint = " (needs root — run this app with sudo)"
+            return False, f"Failed while {description}: {detail}{hint}"
+
+    ok, msg = check_monitor_mode(iface)
+    if not ok:
+        return False, (
+            f"Ran the monitor-mode sequence without error, but it didn't take: {msg} "
+            f"(NetworkManager or wpa_supplicant may be managing this interface and "
+            f"reverting the change — check with 'nmcli device status'.)"
+        )
+    return True, "ok"
+
+
 # ---------------------------------------------------------------------------
 # Real field extraction (scapy)
 # ---------------------------------------------------------------------------
@@ -284,6 +438,77 @@ def _get(obj, attr, default=MISSING):
         return default if val is None else val
     except Exception:
         return default
+
+
+def _dot11_addresses(d11):
+    """wlan.ra/ta/sa/bssid with Wireshark's semantics: which of addr1-4 means
+    what depends on the frame type and the to-DS/from-DS bits. (wlan.da above
+    is raw addr1 — really the RA — in the default profile, kept for the files
+    we already have; the field profile uses _wireshark_da() instead.)
+
+    Control frames carry only RA (plus TA for RTS/PS-Poll/BlockAck*), so
+    sa/bssid stay MISSING there rather than guessing."""
+    out = {"wlan.ra": MISSING, "wlan.ta": MISSING, "wlan.sa": MISSING, "wlan.bssid": MISSING}
+    a1, a2, a3, a4 = (_get(d11, f"addr{i}", None) for i in range(1, 5))
+    out["wlan.ra"] = a1 if a1 is not None else MISSING
+    ftype = _get(d11, "type", None)
+    if ftype == 1:  # control
+        if _get(d11, "subtype", None) in (8, 9, 10, 11) and a2 is not None:  # BAR, BA, PS-Poll, RTS
+            out["wlan.ta"] = a2
+        return out
+    if a2 is not None:
+        out["wlan.ta"] = a2
+    ds = int(d11.FCfield) & 0x03 if _get(d11, "FCfield", None) is not None else 0
+    if ftype == 0 or ds == 0:      # management, or IBSS/direct data
+        out["wlan.sa"], out["wlan.bssid"] = a2, a3
+    elif ds == 1:                  # to DS: addr1=BSSID, addr2=SA
+        out["wlan.sa"], out["wlan.bssid"] = a2, a1
+    elif ds == 2:                  # from DS: addr2=BSSID, addr3=SA
+        out["wlan.sa"], out["wlan.bssid"] = a3, a2
+    else:                          # WDS/mesh: addr4=SA, no single BSSID
+        out["wlan.sa"] = a4
+    return {k: (MISSING if v is None else v) for k, v in out.items()}
+
+
+def _wireshark_da(d11):
+    """wlan.da the way Wireshark fills it: management frames and data frames
+    with DS 0/2 -> addr1, data frames with DS 1/3 -> addr3; control frames
+    carry no destination address (only RA), so MISSING."""
+    ftype = _get(d11, "type", None)
+    if ftype == 1 or ftype is None:
+        return MISSING
+    ds = int(d11.FCfield) & 0x03 if _get(d11, "FCfield", None) is not None else 0
+    a = _get(d11, "addr3" if (ftype == 2 and ds in (1, 3)) else "addr1", None)
+    return MISSING if a is None else a
+
+
+def eapol_msgnr(body):
+    """4-way / group handshake message number of an EAPOL-Key body, following
+    Wireshark's dissector (packet-ieee80211.c) so it matches AWID3's
+    wlan_rsna_eapol.keydes.msgnr. body starts at the descriptor type.
+    Returns MISSING where Wireshark leaves the field empty (requests,
+    non-RSN/WPA descriptors, truncated frames).
+
+    Pairwise (Key Type bit set), on Install|Ack|MIC|Encrypted-Key-Data:
+      Ack only -> 1; Install+Ack(+MIC)+EncKeyData -> 3; anything else -> 2 if
+      the Key Data Length is non-zero, else 4 (Wireshark doesn't trust the
+      Secure bit: Windows sets it on message 2 when rekeying).
+    Group key (Key Type bit clear): Ack -> 1, else 2."""
+    if len(body) < 3 or body[0] not in (2, 254):      # RSN / WPA key descriptors
+        return MISSING
+    info = int.from_bytes(body[1:3], "big")
+    if info & 0x0800:                                  # Request
+        return MISSING
+    if not info & 0x0008:                              # group key handshake
+        return 1 if info & 0x0080 else 2
+    masked = info & (0x0040 | 0x0080 | 0x0100 | 0x1000)   # Install, Ack, MIC, EncKeyData
+    if masked == 0x0080:
+        return 1
+    if masked in (0x0040 | 0x0080 | 0x0100 | 0x1000, 0x0040 | 0x0080 | 0x1000):
+        return 3
+    if len(body) < 95:                                 # no Key Data Length field
+        return MISSING
+    return 2 if int.from_bytes(body[93:95], "big") else 4
 
 
 def _freq_to_channel(freq_mhz):
@@ -568,7 +793,7 @@ def parse_ssh(raw, sport, dport):
 
 
 def extract_fields(pkt, frame_number, first_time, prev_time, session_state=None,
-                    llc_snap_dispatch=False):
+                    llc_snap_dispatch=False, da_from_ds=False):
     """Extract the raw fields listed in FIELD_ORDER from a scapy packet.
 
     session_state (optional dict) carries cross-packet state needed for a
@@ -654,7 +879,10 @@ def extract_fields(pkt, frame_number, first_time, prev_time, session_state=None,
         row["wlan.duration"] = _get(d11, "ID")
         sc = _get(d11, "SC", None)
         row["wlan.seq"] = (sc >> 4) if isinstance(sc, int) else MISSING
-        row["wlan.da"] = _get(d11, "addr1")
+        # da_from_ds (field profile, raw schema 3): Wireshark's wlan.da.
+        # Otherwise raw addr1 (= the RA), kept for the files we already have.
+        row["wlan.da"] = _wireshark_da(d11) if da_from_ds else _get(d11, "addr1")
+        row.update(_dot11_addresses(d11))
 
         # Walk every information element once: SSID lives in tag ID=0
         # (typically beacon/probe frames), RSN lives in tag ID=48, and
@@ -813,11 +1041,12 @@ def extract_fields(pkt, frame_number, first_time, prev_time, session_state=None,
         row["arp.proto.type"] = _get(a, "ptype")
         row["arp.hw.size"] = _get(a, "hwlen")
         row["arp.proto.size"] = _get(a, "plen")
+        row["arp.src.hw_mac"] = _get(a, "hwsrc")
+        row["arp.src.proto_ipv4"] = _get(a, "psrc")
+        row["arp.dst.hw_mac"] = _get(a, "hwdst")
+        row["arp.dst.proto_ipv4"] = _get(a, "pdst")
         # Wireshark's "ARP Probe"/"ARP Announcement"/"reply/gratuitous ARP"
-        # distinction needs comparing sender vs. target protocol address —
-        # psrc/pdst are used transiently right here to classify the frame
-        # and never stored as a column, so this doesn't add an identifier
-        # column despite needing the IPs to compute.
+        # distinction compares sender vs. target protocol address.
         op = _get(a, "op", None)
         psrc = _get(a, "psrc", None)
         pdst = _get(a, "pdst", None)
@@ -849,6 +1078,7 @@ def extract_fields(pkt, frame_number, first_time, prev_time, session_state=None,
                 if len(body) >= 13:
                     row["eapol.keydes.key_len"] = int.from_bytes(body[3:5], "big")
                     row["eapol.keydes.replay_counter"] = int.from_bytes(body[5:13], "big")
+                row["eapol.keydes.msgnr"] = eapol_msgnr(body)
     except ImportError:
         pass
 
@@ -1373,6 +1603,9 @@ def generate_mock_row(frame_number, t0, prev_time, sim_state=None):
     row["wlan.duration"] = random.randint(0, 400)
     row["wlan.seq"] = frame_number % 4096
     row["wlan.da"] = _MACS()
+    row["wlan.ra"] = row["wlan.da"]
+    row["wlan.ta"] = row["wlan.sa"] = _MACS()
+    row["wlan.bssid"] = _MACS()
     freq = random.choice([2412, 2437, 2462, 5180])
     rate = random.choice([1, 6, 24, 54])
     row["radiotap.channel.freq"] = freq
@@ -1411,6 +1644,10 @@ def generate_mock_row(frame_number, t0, prev_time, sim_state=None):
         row["arp.hw.size"] = 6
         row["arp.proto.size"] = 4
         row["arp.description"] = random.choice(["request", "reply", "ARP Probe", "ARP Announcement", "reply/gratuitous ARP"])
+        row["arp.src.hw_mac"] = _MACS()
+        row["arp.src.proto_ipv4"] = f"10.0.{random.randint(0, 3)}.{random.randint(1, 254)}"
+        row["arp.dst.hw_mac"] = "00:00:00:00:00:00" if row["arp.opcode"] == 1 else _MACS()
+        row["arp.dst.proto_ipv4"] = f"10.0.{random.randint(0, 3)}.{random.randint(1, 254)}"
     if kind == "smb1":
         row["smb.present"] = 1
         row["smb.server_component"] = "0xff534d42"
@@ -1576,6 +1813,7 @@ def generate_mock_row(frame_number, t0, prev_time, sim_state=None):
         row["eapol.len"] = random.choice([95, 117, 121])
         row["eapol.keydes.key_len"] = 16
         row["eapol.keydes.replay_counter"] = frame_number
+        row["eapol.keydes.msgnr"] = random.choice([1, 2, 3, 4])
 
     row["has_app_features"] = 1 if any(
         row.get(c, MISSING) != MISSING for c in _APP_FEATURE_COLS
@@ -1591,15 +1829,67 @@ def generate_mock_row(frame_number, t0, prev_time, sim_state=None):
 # Capture session — orchestrates a single capture run in a background thread
 # ---------------------------------------------------------------------------
 
+class _StreamWriter:
+    """Field profile: one gzip CSV for the whole session, each second written
+    once it is complete (1 s grace for late frames), so memory stays flat over
+    hours and the file is readable up to the last flush if the capture dies.
+    n_unique_dest_mac_per_sec is per-second, so it is filled here per second."""
+
+    def __init__(self, path):
+        self.f = gzip.open(path, "wt", newline="")
+        self.w = csv.DictWriter(self.f, fieldnames=FIELD_ORDER, extrasaction="ignore")
+        self.w.writeheader()
+        self.pending = {}
+        self.frames, self.first, self.last = 0, None, None
+        self._flushed_at = 0
+
+    def add(self, row):
+        t = row.get("frame.time_epoch", MISSING)
+        self.pending.setdefault(int(t) if t != MISSING else -1, []).append(row)
+
+    def flush(self, now, force=False):
+        for sec in sorted(s for s in self.pending if force or s < int(now) - 1):
+            rows = self.pending.pop(sec)
+            n_da = len({r["wlan.da"] for r in rows if r.get("wlan.da", MISSING) != MISSING})
+            for r in rows:
+                if n_da:
+                    r["n_unique_dest_mac_per_sec"] = n_da
+                self.w.writerow(csv_row(r))
+            self.frames += len(rows)
+            if sec >= 0:
+                self.first = sec if self.first is None else min(self.first, sec)
+                self.last = sec if self.last is None else max(self.last, sec)
+        if force or now - self._flushed_at >= 5:
+            self.f.flush()                  # a gzip block on disk every ~5 s
+            self._flushed_at = now
+
+    def close(self):
+        self.flush(time.time(), force=True)
+        self.f.close()
+
+
 class CaptureSession:
     def __init__(self, capture_id, interface, simulate, duration, max_packets, out_dir,
-                 llc_snap_dispatch=False):
+                 llc_snap_dispatch=False, compress=False, channel=None, width=None,
+                 profile="default", experiment=""):
         self.id = capture_id
+        self.profile = profile
+        self.experiment = experiment
+        self.ground_truth = []          # field profile: {"start", "end", "attack", "pmf", "notes"}
+        self.gt_path = None
         self.interface = interface
+        # channel/width to tune to before sniffing; None = leave the adapter
+        # where it is. Either way the real tuning (iw dev info) goes in the sidecar.
+        self.channel = channel
+        self.width = width
+        self.channel_info = None
         self.simulate = simulate
         self.duration = duration
         self.max_packets = max_packets
         self.llc_snap_dispatch = llc_snap_dispatch
+        # gzip the CSV: ~10x smaller (~44 MB/h instead of ~450 MB/h on a busy
+        # channel) with every column kept, for long baseline collection.
+        self.compress = compress or profile == "field"     # field captures stream to .csv.gz
         self.status = "idle"       # idle | capturing | done | error
         self.packets_captured = 0
         self.error = None
@@ -1615,9 +1905,17 @@ class CaptureSession:
         with self._lock:
             return {
                 "capture_id": self.id,
+                "profile": self.profile,
+                "experiment": self.experiment,
+                "ground_truth": list(self.ground_truth),
+                "ground_truth_filename": os.path.basename(self.gt_path) if self.gt_path else None,
                 "interface": self.interface,
+                "channel": self.channel,
+                "width": self.width,
+                "channel_info": self.channel_info,
                 "simulate": self.simulate,
                 "llc_snap_dispatch": self.llc_snap_dispatch,
+                "compress": self.compress,
                 "status": self.status,
                 "packets_captured": self.packets_captured,
                 "error": self.error,
@@ -1646,18 +1944,40 @@ class CaptureSession:
         try:
             if not self.simulate:
                 ok, msg = check_monitor_mode(self.interface)
+                info = None
+                if ok and self.channel:
+                    ok, msg, info = set_channel(self.interface, self.channel, self.width)
+                elif ok:
+                    info = iface_channel_info(self.interface)
                 if not ok:
                     with self._lock:
                         self.status = "error"
                         self.error = msg
                         self.finished_at = time.time()
                     return
+                self.channel_info = info
 
             os.makedirs(self.out_dir, exist_ok=True)
             ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(self.started_at))
-            self.csv_path = os.path.join(self.out_dir, f"capture_{ts}.csv")
+            ext = ".csv.gz" if self.compress else ".csv"
+            self.csv_path = os.path.join(self.out_dir, f"capture_{ts}{ext}")
 
+            field = self.profile == "field"
             rows = []
+            stream = None
+            if field:
+                stream = _StreamWriter(self.csv_path)
+                with self._lock:
+                    self.gt_path = sidecar_path(self.csv_path)[:-5] + "_ground_truth.csv"
+                    self._write_ground_truth()      # header only = "no attack" until marked
+                self._write_sidecar(stream=stream, final=False)
+
+            def emit(row):
+                if stream is None:
+                    rows.append(row)
+                else:
+                    stream.add(row)
+                    stream.flush(time.time())
             if self.simulate:
                 t0 = time.time()
                 prev_time = None
@@ -1677,7 +1997,7 @@ class CaptureSession:
                     i += 1
                     row = generate_mock_row(i, t0, prev_time, sim_state)
                     prev_time = row["frame.time_epoch"]
-                    rows.append(row)
+                    emit(row)
                     with self._lock:
                         self.packets_captured = i
                     time.sleep(interval)
@@ -1689,9 +2009,9 @@ class CaptureSession:
                 def handler(pkt):
                     state["count"] += 1
                     row = extract_fields(pkt, state["count"], self.started_at, state["prev_time"], state,
-                                          llc_snap_dispatch=self.llc_snap_dispatch)
+                                          llc_snap_dispatch=self.llc_snap_dispatch, da_from_ds=field)
                     state["prev_time"] = row["frame.time_epoch"]
-                    rows.append(row)
+                    emit(row)
                     with self._lock:
                         self.packets_captured = state["count"]
 
@@ -1707,13 +2027,23 @@ class CaptureSession:
                 sniffer.start()
                 sniffer.join()
 
-            add_derived_columns(rows)
-
-            with open(self.csv_path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=FIELD_ORDER)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow(row)
+            if stream is not None:
+                stream.close()
+                with self._lock:
+                    for g in self.ground_truth:     # an attack still marked running ends with the capture
+                        if g["end"] is None:
+                            g["end"] = time.time()
+                    self._write_ground_truth()
+                self._write_sidecar(stream=stream)
+            else:
+                add_derived_columns(rows)
+                opener = gzip.open if self.compress else open
+                with opener(self.csv_path, "wt", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=FIELD_ORDER)
+                    writer.writeheader()
+                    for row in rows:
+                        writer.writerow(csv_row(row))
+                self._write_sidecar(rows=rows)
 
             with self._lock:
                 self.status = "done"
@@ -1735,11 +2065,99 @@ class CaptureSession:
                 self.error = f"Unexpected error: {e}"
                 self.finished_at = time.time()
 
+    def _write_sidecar(self, rows=None, stream=None, final=True):
+        if stream is not None:
+            first, last, frames = stream.first, stream.last, stream.frames
+        else:
+            times = [r["frame.time_epoch"] for r in rows if r.get("frame.time_epoch", MISSING) != MISSING]
+            first, last, frames = min(times, default=None), max(times, default=None), len(rows)
+        try:
+            from analysis.features import FEATURE_VERSION
+        except ImportError:
+            FEATURE_VERSION = None
+        field = self.profile == "field"
+        write_sidecar(self.csv_path, {
+            "source": "capture", "profile": self.profile, "experiment": self.experiment,
+            "iface": "simulated" if self.simulate else self.interface,
+            "channel": None if self.simulate else self.channel,
+            "width": None if self.simulate else self.width, "channel_info": self.channel_info,
+            "raw_schema_version": FIELD_RAW_SCHEMA_VERSION if field else RAW_SCHEMA_VERSION,
+            "feature_version": FEATURE_VERSION,
+            "git_revision": GIT_REVISION, "llc_snap_dispatch": self.llc_snap_dispatch,
+            "buffer": ("one continuous file per session; each second written once complete (1 s grace)"
+                       if field else "whole capture held in memory, written once when it ends"),
+            "ground_truth": os.path.basename(self.gt_path) if self.gt_path else None,
+            "started_at": self.started_at, "ended_at": time.time() if final else None,
+            "first_frame": first, "last_frame": last, "frames": frames,
+        })
 
-def start_capture(interface, simulate, duration, max_packets, out_dir, llc_snap_dispatch=False):
+    # ------------------------------------------------ ground truth (field profile)
+    def _write_ground_truth(self):
+        """Rewrite <capture>_ground_truth.csv (caller holds the lock). Times are
+        unix seconds from this machine's clock, the same as frame.time_epoch."""
+        tmp = self.gt_path + ".tmp"
+        with open(tmp, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=GROUND_TRUTH_FIELDS)
+            w.writeheader()
+            for g in sorted(self.ground_truth, key=lambda g: g["start"]):
+                w.writerow({"start_epoch": f"{g['start']:.3f}",
+                            "end_epoch": "" if g["end"] is None else f"{g['end']:.3f}",
+                            "attack": g["attack"],
+                            "notes": "; ".join(x for x in (f"PMF {g['pmf']}" if g["pmf"] else "", g["notes"]) if x)})
+        os.replace(tmp, self.gt_path)
+
+    def mark(self, action, attack=None, pmf=None, notes="", start=None, end=None, index=None):
+        """Edit the ground truth. action: "start" (attack begins now), "end"
+        (the running one ends now), "add" (a past period: start/end given),
+        "delete" (row `index`). Return (ok, message)."""
+        with self._lock:
+            if self.profile != "field" or self.gt_path is None:
+                return False, "ground truth is only kept for field captures, once they have started"
+            running = [g for g in self.ground_truth if g["end"] is None]
+            now = time.time()
+            if action in ("start", "add"):
+                if attack not in FIELD_ATTACKS:
+                    return False, f"attack must be one of {', '.join(FIELD_ATTACKS)}"
+                if pmf not in ("on", "off", "unknown"):
+                    return False, "say whether PMF (802.11w) was on, off or unknown"
+            if action == "start":
+                if self.status != "capturing":
+                    return False, "the capture isn't running — add the period by its times instead"
+                if running:
+                    return False, f"{running[0]['attack']} is still marked as running — end it first"
+                self.ground_truth.append({"start": now, "end": None, "attack": attack, "pmf": pmf,
+                                          "notes": str(notes)[:200]})
+            elif action == "end":
+                if not running:
+                    return False, "no attack is marked as running"
+                running[0]["end"] = now
+            elif action == "add":
+                try:
+                    start, end = float(start), float(end)
+                except (TypeError, ValueError):
+                    return False, "start and end must be times"
+                if end < start:
+                    return False, "the period ends before it starts"
+                self.ground_truth.append({"start": start, "end": end, "attack": attack, "pmf": pmf,
+                                          "notes": str(notes)[:200]})
+            elif action == "delete":
+                try:
+                    self.ground_truth.pop(int(index))
+                except (TypeError, ValueError, IndexError):
+                    return False, "no such row"
+            else:
+                return False, "unknown action"
+            self.ground_truth.sort(key=lambda g: g["start"])
+            self._write_ground_truth()
+        return True, "ok"
+
+
+def start_capture(interface, simulate, duration, max_packets, out_dir, llc_snap_dispatch=False,
+                  compress=False, channel=None, width=None, profile="default", experiment=""):
     capture_id = str(uuid.uuid4())
     session = CaptureSession(capture_id, interface, simulate, duration, max_packets, out_dir,
-                              llc_snap_dispatch=llc_snap_dispatch)
+                              llc_snap_dispatch=llc_snap_dispatch, compress=compress,
+                              channel=channel, width=width, profile=profile, experiment=experiment)
     thread = threading.Thread(target=session.run, daemon=True)
     thread.start()
     return session

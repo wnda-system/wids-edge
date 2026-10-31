@@ -60,8 +60,15 @@ with.)
 
 ## Before a real capture
 
-Put your adapter into monitor mode first — the app checks this and fails
-clearly if it isn't:
+Type the interface name into the UI (defaults to `wlx1cbfce71ebe7`, this
+machine's USB adapter) and click "Enable monitor mode" next to it — the app
+runs the down / set-type-monitor / up sequence for you and confirms it
+actually took effect before letting you capture. Only needed once per
+adapter per boot. If you don't know the interface name yet, run `iw dev` in
+a terminal to list your adapters — the app also has a "(how do I find
+this?)" link with the same pointer.
+
+That button calls the same three commands you'd otherwise run by hand:
 
 ```bash
 iw dev                                    # find your adapter's interface name
@@ -70,9 +77,9 @@ sudo iw dev <interface-name> set type monitor
 sudo ip link set <interface-name> up
 ```
 
-Enter that interface name in the UI (defaults to `wlx1cbfce71ebe7`, this
-machine's USB adapter). The app also has a "(how do I find this?)" link
-next to the interface field with these same steps.
+— useful to know if the button's error message points you at something the
+UI can't fix for you (e.g. NetworkManager fighting over the interface, see
+below), or if you'd rather just do it directly.
 
 `71-rename-wifi-capture.rules` in this folder can give the adapter a
 short permanent name instead — unused by default. If you already applied it
@@ -124,10 +131,42 @@ whichever of the two comes first, or when you click "Stop capture now" —
 your choice. Toggle either checkbox off to use just one condition (at least
 one must stay on). Time can be set in seconds, minutes, hours, or days.
 
+## Live anomaly monitor (`/monitor`)
+
+A proof-of-concept dashboard that captures continuously, scores every second
+of traffic for WiFi attacks, and keeps learning what "normal" looks like.
+Open `http://<host>:5000/monitor`, then:
+
+1. (Optional) **Seed the baseline** from earlier capture folders — only ones
+   recorded on the same channel and width.
+2. **Start monitoring** (defaults: channel 100, 40 MHz HT40+ — keep them the
+   same as the baseline).
+3. Leave it running. Detectors are refitted every 10 minutes; **Brain Power**
+   shows how far along that is (coverage of the 168 hours of a week, threshold
+   stability, false alarms on not-yet-seen data).
+
+Rule-based alerts (deauth/disassoc floods, spoofed deauth, evil twin, ARP
+spoofing, …) are trusted from the start; alerts from the learned model alone
+are marked low-confidence until Brain Power reaches 50%. "Demo without the
+adapter" replays a recorded capture through the same pipeline.
+
+To keep it running unattended (survives closing the terminal/SSH and
+reboots, and resumes monitoring by itself), install it as a service instead of
+using `./run.sh` — see the comments at the top of `wifi-capture.service`.
+
+Everything is stored under `captures/monitor/` (raw frames as 5-minute
+`.csv.gz` chunks, ~44 MB/hour on channel 100). The capture page refuses to use
+the interface while the monitor holds it. Design notes and test results:
+`anomaly_detection_notes.md`.
+
 ## Files
 
 - `app.py` — Flask server (`/`, `/capture`, `/status/<id>`, `/stop/<id>`, `/download/<id>`)
 - `capture.py` — field extraction (scapy) + simulate-mode packet generator
+- `monitor.py` — live anomaly monitor (continuous capture, detection, learning, Brain Power)
+- `templates/monitor.html` — the monitor dashboard
+- `analysis/` — shared feature/detector code, offline evaluator (`anomaly_detect.py`),
+  long baseline collector (`collect_baseline.py`)
 - `templates/index.html` — the UI
 - `run.sh` — one-click launcher (setup + start, via sudo)
 - `wifi-capture.desktop` — desktop/app-menu icon, runs `run.sh`

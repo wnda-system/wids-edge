@@ -1,0 +1,30 @@
+# SSH tunnel to the Model C service on the training machine (br1).
+# The service port isn't reachable from the sensor (8889 timed out on 2026-10-13), SSH (22) is —
+# so the monitor talks to 127.0.0.1:8500 here and SSH carries it, encrypted
+# (the service itself is plain HTTP with a Bearer token).
+#
+# Uses a dedicated key (~molecule/.ssh/model_c_tunnel) that br1's
+# authorized_keys restricts to forwarding 127.0.0.1:8500 only — no shell,
+# no commands (see ops/README.md).
+#
+# Install: sudo install -m 644 ops/model-c-tunnel.service /etc/systemd/system/ \
+#          && sudo systemctl daemon-reload && sudo systemctl enable --now model-c-tunnel
+# Status:  systemctl status model-c-tunnel ; journalctl -u model-c-tunnel -f
+
+[Unit]
+Description=SSH tunnel to the Model C service on br1 (127.0.0.1:8500)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/wifi-capture/tunnel.env
+User=molecule
+ExecStart=/usr/bin/ssh -N -i /home/molecule/.ssh/model_c_tunnel \
+    -o IdentitiesOnly=yes -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=15 \
+    -L 127.0.0.1:8500:127.0.0.1:8500 ${TUNNEL_TARGET}
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

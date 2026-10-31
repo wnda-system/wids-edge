@@ -26,15 +26,19 @@ if [ ! -d venv ]; then
     fi
 fi
 
-if ! venv/bin/python3 -c "import flask, scapy" >/dev/null 2>&1; then
-    echo "First run: installing dependencies (flask, scapy)..."
-    venv/bin/pip install --quiet --upgrade pip
-    venv/bin/pip install --quiet flask scapy
+# pandas + scikit-learn power the live anomaly monitor (/monitor).
+# "python3 -m pip" rather than venv/bin/pip: the pip script's shebang breaks
+# if the folder was moved after the venv was created.
+if ! venv/bin/python3 -c "import flask, scapy, pandas, sklearn" >/dev/null 2>&1; then
+    echo "Installing dependencies (flask, scapy, pandas, scikit-learn)..."
+    venv/bin/python3 -m pip install --quiet --upgrade pip
+    venv/bin/python3 -m pip install --quiet flask scapy pandas scikit-learn
 fi
 
 echo
 echo "Starting WiFi Packet Capture..."
 echo "Open on this computer: http://localhost:5000"
+echo "Live anomaly monitor:  http://localhost:5000/monitor"
 IPS=$(hostname -I 2>/dev/null)
 if [ -n "$IPS" ]; then
     echo "Open from another device on your network (LAN or WiFi), using whichever address matches that network:"

@@ -46,6 +46,38 @@
   .field-row { display: flex; gap: 8px; }
   .field-row input[type="number"] { flex: 2; }
   .field-row select { flex: 1; }
+  .field-row input[type="text"] { flex: 1; }
+  .field-row button.secondary {
+    flex: 0 0 auto;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--blue);
+    background: white;
+    border: 1px solid var(--blue);
+    border-radius: 8px;
+    cursor: pointer;
+    margin-bottom: 16px;
+    transition: background 0.15s;
+  }
+  .field-row button.secondary:hover { background: #eff6ff; }
+  .field-row button.secondary:disabled { color: var(--gray); border-color: var(--border); cursor: not-allowed; background: white; }
+  .field-row button.secondary.done { color: var(--green); border-color: var(--green); }
+  .spinner-dark {
+    display: inline-block;
+    width: 13px; height: 13px;
+    border: 2px solid rgba(37,99,235,0.25);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .mm-status { font-size: 12px; margin: -12px 0 16px; display: none; }
+  .mm-status.visible { display: block; }
+  .mm-status.ok { color: var(--green); }
+  .mm-status.error { color: var(--red); }
   button#stopBtn {
     width: 100%;
     padding: 12px;
@@ -120,30 +152,89 @@
     font-size: 14px;
   }
   a.download:hover { text-decoration: underline; }
+  .profiles { display: flex; gap: 0; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .profiles button { flex: 1; padding: 10px; font-size: 14px; font-weight: 600; border: none; background: white; color: var(--gray); cursor: pointer; }
+  .profiles button.on { background: #eff6ff; color: var(--blue); }
+  .profiles button + button { border-left: 1px solid var(--border); }
+  .note { font-size: 12px; color: var(--gray); margin: 0 0 20px; line-height: 1.6; }
+  .note ul { margin: 4px 0 0; padding-left: 18px; }
+  body.field .default-only, body:not(.field) .field-only { display: none !important; }
+  .gt { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-top: 16px; }
+  .gt h2 { font-size: 14px; margin: 0 0 4px; }
+  .gt .field-row button { flex: 1; padding: 9px; font-size: 13px; font-weight: 600; border-radius: 8px; cursor: pointer; border: 1px solid var(--blue); background: white; color: var(--blue); }
+  .gt .field-row button.stop { border-color: var(--red); color: var(--red); }
+  .gt .field-row button:disabled { opacity: .45; cursor: not-allowed; }
+  .gt input[type="datetime-local"] { flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .gt table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 6px 0 10px; }
+  .gt td, .gt th { text-align: left; padding: 5px 4px; border-bottom: 1px solid #f1f5f9; }
+  .gt th { color: var(--gray); font-weight: 600; }
+  .gt td button { font-size: 12px; padding: 2px 8px; border: 1px solid #fecaca; color: var(--red); background: white; border-radius: 6px; cursor: pointer; }
+  .gt .msg { font-size: 12px; min-height: 16px; }
+  .gt .msg.err { color: var(--red); } .gt .msg.ok { color: var(--green); }
 </style>
 </head>
 <body>
   <div class="card">
     <h1>WiFi Packet Capture</h1>
-    <div class="subtitle">Capture live WiFi traffic and export it as a CSV file.</div>
+    <div class="subtitle">Capture live WiFi traffic and export it as a CSV file.
+      <a href="/monitor" style="color:var(--blue)">Live anomaly monitor →</a></div>
+
+    <label>Capture profile</label>
+    <div class="profiles">
+      <button type="button" class="on" data-profile="default">Default</button>
+      <button type="button" data-profile="field">Field test (AWID3)</button>
+    </div>
+    <div class="note default-only">What we normally use: everything below can be set freely.</div>
+    <div class="note field-only">For field experiments the training side compares with AWID3. Fixed settings:
+      <ul>
+        <li>channel and width must be set; the adapter is checked with <code>iw</code> and both are saved in the .json</li>
+        <li>one continuous <code>.csv.gz</code> per session, each second written once complete — no memory limit, no packet cap</li>
+        <li><code>wlan.da</code> follows the DS bits like Wireshark (raw schema 3); every other column unchanged</li>
+        <li>LLC/SNAP decoding on (same as the live monitor)</li>
+        <li>attack periods are marked below while capturing and saved as <code>…_ground_truth.csv</code></li>
+      </ul>
+    </div>
+
+    <div class="field-only">
+      <label for="experiment">Experiment name</label>
+      <input type="text" id="experiment" placeholder="e.g. normal traffic, weekday afternoon / deauth TEST-AP PMF off" style="width:100%;margin-bottom:20px">
+    </div>
 
     <label for="interface">
       Capture interface
       <a href="#" id="helpToggle" style="font-weight:400; font-size:12px; margin-left:6px;">(how do I find this?)</a>
     </label>
-    <input type="text" id="interface" value="wlx1cbfce71ebe7">
+    <div class="field-row">
+      <input type="text" id="interface" value="wlx1cbfce71ebe7">
+      <button id="monitorModeBtn" type="button" class="secondary">Enable monitor mode</button>
+    </div>
+    <div class="mm-status" id="monitorModeStatus"></div>
 
     <div id="helpPanel" style="display:none; background:#f1f5f9; border-radius:8px; padding:14px 16px; margin:-8px 0 16px; font-size:13px; line-height:1.7;">
-      Open a terminal on this computer and run, in order:
+      Type the interface name, then click "Enable monitor mode" — it runs the down / set-type /
+      up sequence for you. If you don't know the name yet:
       <ol style="margin:8px 0 4px; padding-left:20px;">
-        <li><code>iw dev</code> — lists your WiFi adapters and interface names.</li>
-        <li><code>sudo ip link set &lt;interface-name&gt; down</code></li>
-        <li><code>sudo iw dev &lt;interface-name&gt; set type monitor</code></li>
-        <li><code>sudo ip link set &lt;interface-name&gt; up</code></li>
-        <li>Run <code>iw dev</code> again to confirm — the interface should now show <code>type monitor</code>. That exact name goes in the box above.</li>
+        <li>Open a terminal on this computer and run <code>iw dev</code> — it lists your WiFi
+          adapters. Look for one that isn't your normal WiFi connection.</li>
+        <li>Type that name into the box above and click "Enable monitor mode".</li>
       </ol>
-      Note: this locks the adapter to one WiFi channel, so it will only see traffic on that channel.
+      Only needed once per adapter per boot — it stays in monitor mode until you change it back
+      or unplug it. Note: this locks the adapter to one WiFi channel, so it will only see traffic
+      on that channel.
     </div>
+
+    <label for="channel">Channel</label>
+    <div class="field-row">
+      <input type="number" id="channel" value="100" min="1" max="233" placeholder="keep current">
+      <select id="width">
+        <option value="HT40+" selected>40 MHz (HT40+)</option>
+        <option value="HT40-">40 MHz (HT40-)</option>
+        <option value="HT20">20 MHz (HT20)</option>
+        <option value="80MHz">80 MHz</option>
+        <option value="">driver default</option>
+      </select>
+    </div>
+    <div style="font-size:12px; color:var(--gray); margin:-12px 0 16px;">Tuned before the capture starts and checked with <code>iw dev … info</code>; the real channel is saved in the capture's .json file.<span class="default-only"> Leave the channel empty to keep whatever the adapter is on.</span></div>
 
     <div class="checkbox-row">
       <input type="checkbox" id="limitByTime" checked>
@@ -159,18 +250,25 @@
       </select>
     </div>
 
-    <div class="checkbox-row">
+    <div class="checkbox-row default-only">
       <input type="checkbox" id="limitByPackets" checked>
       <label for="limitByPackets">Stop after a packet count</label>
     </div>
-    <input type="number" id="maxPackets" value="200" min="1" max="100000">
-    <div id="limitHint" style="font-size:12px; color:var(--gray); margin:-12px 0 16px;">Pick at least one — whichever limit is hit first stops the capture. You can also stop manually at any time.</div>
+    <input type="number" id="maxPackets" value="200" min="1" max="100000" class="default-only">
+    <div id="limitHint" class="default-only" style="font-size:12px; color:var(--gray); margin:-12px 0 16px;">Pick at least one — whichever limit is hit first stops the capture. You can also stop manually at any time.</div>
+    <div class="field-only" style="font-size:12px; color:var(--gray); margin:-12px 0 16px;">Optional — without a time limit it runs until you press Stop.</div>
 
     <div class="checkbox-row">
       <input type="checkbox" id="simulate">
       <label for="simulate">Simulate capture (no hardware needed — for testing)</label>
     </div>
 
+    <div class="checkbox-row default-only">
+      <input type="checkbox" id="compress">
+      <label for="compress">Compress CSV (.csv.gz, ~10× smaller — all columns kept)</label>
+    </div>
+
+    <div class="default-only">
     <label for="parserMode">Field extraction</label>
     <select id="parserMode">
       <option value="original" selected>Original (current default behavior)</option>
@@ -181,6 +279,7 @@
       own dissection already found them. "LLC/SNAP dispatch" adds a manual fallback that reads
       the LLC/SNAP header directly off unencrypted Data frames scapy didn't already dissect —
       same wlan.*/radiotap.* fields either way. Run both against the same traffic to compare.
+    </div>
     </div>
 
     <button id="captureBtn">Capture</button>
@@ -194,6 +293,31 @@
       <div class="row"><span class="label">Field extraction</span><span id="sumParserMode">–</span></div>
       <div class="row"><span class="label">Finished</span><span id="sumTime">–</span></div>
       <a href="#" class="download" id="downloadLink" style="display:none;">Download CSV</a>
+      <a href="#" class="download" id="downloadGt" style="display:none;margin-left:14px">Ground truth</a>
+      <a href="#" class="download" id="downloadSide" style="display:none;margin-left:14px">Sidecar .json</a>
+    </div>
+
+    <div class="gt field-only" id="gtPanel" hidden>
+      <h2>Ground truth</h2>
+      <div class="note" style="margin-bottom:10px">Press "Attack started" the moment the attack begins and "Attack ended" when it stops.
+        Times come from this machine's clock — the same clock as <code>frame.time_epoch</code>. No rows = the whole capture is normal traffic.</div>
+      <div class="field-row">
+        <select id="gtAttack"></select>
+        <select id="gtPmf"><option value="off">PMF off</option><option value="on">PMF on</option><option value="unknown">PMF unknown</option></select>
+      </div>
+      <input type="text" id="gtNotes" placeholder="Notes, e.g. aireplay-ng -0 10 against TEST-PHONE" style="width:100%;margin-bottom:10px">
+      <div class="field-row">
+        <button type="button" id="gtStart">Attack started</button>
+        <button type="button" id="gtEnd" class="stop" disabled>Attack ended</button>
+      </div>
+      <table><thead><tr><th>Start</th><th>End</th><th>Attack</th><th>Notes</th><th></th></tr></thead><tbody id="gtRows"></tbody></table>
+      <details><summary style="font-size:12px;cursor:pointer;color:var(--gray)">Forgot to press a button? Add a period by its times</summary>
+        <div class="field-row" style="margin-top:8px">
+          <input type="datetime-local" id="gtFrom" step="1"> <input type="datetime-local" id="gtTo" step="1">
+        </div>
+        <div class="field-row"><button type="button" id="gtAdd">Add period (uses the attack, PMF and notes above)</button></div>
+      </details>
+      <div class="msg" id="gtMsg"></div>
     </div>
   </div>
 
@@ -212,11 +336,82 @@ const UNIT_SECONDS = { s: 1, m: 60, h: 3600, d: 86400 };
 
 let polling = null;
 let currentCaptureId = null;
+let profile = 'default';
+
+document.querySelectorAll('.profiles button').forEach(b => b.addEventListener('click', () => {
+  if (btn.disabled) return;                       // not while a capture is running
+  profile = b.dataset.profile;
+  document.querySelectorAll('.profiles button').forEach(x => x.classList.toggle('on', x === b));
+  document.body.classList.toggle('field', profile === 'field');
+  if (profile === 'field' && !document.getElementById('channel').value) document.getElementById('channel').value = 100;
+}));
 
 document.getElementById('helpToggle').addEventListener('click', (e) => {
   e.preventDefault();
   const panel = document.getElementById('helpPanel');
   panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+});
+
+const interfaceInput = document.getElementById('interface');
+const monitorModeBtn = document.getElementById('monitorModeBtn');
+const monitorModeStatus = document.getElementById('monitorModeStatus');
+
+function setMonitorStatus(text, kind) {
+  monitorModeStatus.textContent = text;
+  monitorModeStatus.className = 'mm-status visible' + (kind ? ' ' + kind : '');
+}
+
+// Typing a different interface name invalidates the "✓ done" state from a
+// previous click — don't let a stale checkmark imply the *new* name is
+// already in monitor mode.
+interfaceInput.addEventListener('input', () => {
+  if (monitorModeBtn.classList.contains('done')) {
+    monitorModeBtn.classList.remove('done');
+    monitorModeBtn.textContent = 'Enable monitor mode';
+    monitorModeStatus.classList.remove('visible');
+  }
+});
+
+monitorModeBtn.addEventListener('click', async () => {
+  const iface = interfaceInput.value.trim();
+  if (!iface) {
+    setMonitorStatus('Enter an interface name first.', 'error');
+    return;
+  }
+
+  monitorModeBtn.disabled = true;
+  interfaceInput.disabled = true;
+  monitorModeBtn.classList.remove('done');
+  monitorModeBtn.innerHTML = '<span class="spinner-dark"></span>Enabling…';
+  setMonitorStatus('');
+
+  let resp, data;
+  try {
+    resp = await fetch('/prepare-interface', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interface: iface })
+    });
+    data = await resp.json();
+  } catch (e) {
+    monitorModeBtn.disabled = false;
+    interfaceInput.disabled = false;
+    monitorModeBtn.textContent = 'Enable monitor mode';
+    setMonitorStatus('Could not reach the server: ' + e, 'error');
+    return;
+  }
+
+  monitorModeBtn.disabled = false;
+  interfaceInput.disabled = false;
+
+  if (resp.ok) {
+    monitorModeBtn.classList.add('done');
+    monitorModeBtn.textContent = 'Monitor mode ✓';
+    setMonitorStatus(`'${iface}' is now in monitor mode.`, 'ok');
+  } else {
+    monitorModeBtn.textContent = 'Enable monitor mode';
+    setMonitorStatus(data.error || 'Failed to enable monitor mode.', 'error');
+  }
 });
 
 const limitByTime = document.getElementById('limitByTime');
@@ -235,7 +430,7 @@ function syncLimitInputs() {
 }
 
 function enforceAtLeastOneLimit(changed) {
-  if (!limitByTime.checked && !limitByPackets.checked) {
+  if (profile === 'default' && !limitByTime.checked && !limitByPackets.checked) {
     // don't allow turning off the last remaining limit
     changed.checked = true;
   }
@@ -281,6 +476,9 @@ btn.addEventListener('click', async () => {
 
   const interfaceName = document.getElementById('interface').value.trim();
   const simulate = document.getElementById('simulate').checked;
+  const compress = document.getElementById('compress').checked;
+  const channel = document.getElementById('channel').value.trim();
+  const width = document.getElementById('width').value;
   const llcSnapDispatch = document.getElementById('parserMode').value === 'llc_snap';
 
   let durationSeconds = null;
@@ -290,8 +488,14 @@ btn.addEventListener('click', async () => {
     durationSeconds = Math.max(1, Math.round(durationValue * UNIT_SECONDS[durationUnit]));
   }
 
+  if (profile === 'field' && !channel && !simulate) {
+    showError('Field captures need the channel set.');
+    setBtnIdle();
+    return;
+  }
+
   let maxPackets = null;
-  if (limitByPackets.checked) {
+  if (limitByPackets.checked && profile === 'default') {
     maxPackets = parseInt(maxPacketsInput.value, 10) || 200;
   }
 
@@ -304,8 +508,13 @@ btn.addEventListener('click', async () => {
         interface: interfaceName,
         simulate: simulate,
         llc_snap_dispatch: llcSnapDispatch,
+        compress: compress,
+        channel: channel || null,
+        width: channel ? width : null,
         duration: durationSeconds,
-        max_packets: maxPackets
+        max_packets: maxPackets,
+        profile: profile,
+        experiment: document.getElementById('experiment').value.trim()
       })
     });
     data = await resp.json();
@@ -347,6 +556,7 @@ async function pollStatus(captureId) {
   }
   if (!resp.ok) return;
 
+  renderGt(data);
   if (data.status === 'capturing') {
     btn.innerHTML = `<span class="spinner"></span>Capturing… (${data.packets_captured} packets)`;
   } else if (data.status === 'done') {
@@ -360,6 +570,10 @@ async function pollStatus(captureId) {
     sumTime.textContent = data.finished_at ? new Date(data.finished_at * 1000).toLocaleString() : '–';
     downloadLink.href = `/download/${captureId}`;
     downloadLink.style.display = 'inline-block';
+    document.getElementById('downloadSide').href = `/download/${captureId}?file=sidecar`;
+    document.getElementById('downloadSide').style.display = 'inline-block';
+    document.getElementById('downloadGt').href = `/download/${captureId}?file=ground_truth`;
+    document.getElementById('downloadGt').style.display = data.profile === 'field' ? 'inline-block' : 'none';
   } else if (data.status === 'error') {
     clearInterval(polling);
     resetStopBtn();
@@ -367,6 +581,52 @@ async function pollStatus(captureId) {
     showError(data.error || 'Capture failed.');
   }
 }
+
+// ------------------------------------------------ ground truth (field profile)
+const gtEsc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const gtTime = t => t == null ? 'running…' : new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+fetch('/capture/attacks').then(r => r.json()).then(d => {
+  document.getElementById('gtAttack').innerHTML = d.attacks.map(a => `<option>${gtEsc(a)}</option>`).join('');
+}).catch(() => {});
+
+function renderGt(data) {
+  const panel = document.getElementById('gtPanel');
+  panel.hidden = data.profile !== 'field';
+  if (panel.hidden) return;
+  const rows = data.ground_truth || [], running = rows.some(g => g.end == null);
+  document.getElementById('gtStart').disabled = running || data.status !== 'capturing';
+  document.getElementById('gtEnd').disabled = !running;
+  document.getElementById('gtRows').innerHTML = rows.length ? rows.map((g, i) =>
+    `<tr><td>${gtTime(g.start)}</td><td>${gtTime(g.end)}</td><td>${gtEsc(g.attack)}</td>
+     <td>PMF ${gtEsc(g.pmf)}${g.notes ? ' · ' + gtEsc(g.notes) : ''}</td><td><button data-del="${i}">Delete</button></td></tr>`).join('')
+    : '<tr><td colspan="5" style="color:var(--gray)">No attack marked — normal traffic so far.</td></tr>';
+}
+
+async function gtPost(body) {
+  const msg = document.getElementById('gtMsg');
+  try {
+    const r = await fetch(`/capture/${currentCaptureId}/ground_truth`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    msg.textContent = 'Saved.'; msg.className = 'msg ok';
+    renderGt(d);
+  } catch (e) { msg.textContent = e.message; msg.className = 'msg err'; }
+}
+const gtFields = () => ({attack: document.getElementById('gtAttack').value, pmf: document.getElementById('gtPmf').value,
+  notes: document.getElementById('gtNotes').value.trim()});
+document.getElementById('gtStart').addEventListener('click', () => gtPost({action: 'start', ...gtFields()}));
+document.getElementById('gtEnd').addEventListener('click', () => gtPost({action: 'end'}));
+document.getElementById('gtAdd').addEventListener('click', () => {
+  const a = new Date(document.getElementById('gtFrom').value).getTime() / 1000;
+  const b = new Date(document.getElementById('gtTo').value).getTime() / 1000;
+  const msg = document.getElementById('gtMsg');
+  if (!a || !b) { msg.textContent = 'Pick both a start and an end time.'; msg.className = 'msg err'; return; }
+  gtPost({action: 'add', start: a, end: b, ...gtFields()});
+});
+document.getElementById('gtRows').addEventListener('click', e => {
+  if (e.target.dataset.del !== undefined) gtPost({action: 'delete', index: +e.target.dataset.del});
+});
 
 function resetStopBtn() {
   stopBtn.classList.remove('visible');

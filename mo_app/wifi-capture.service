@@ -1,0 +1,27 @@
+# Runs the capture app + live anomaly monitor as a system service, so it keeps
+# running when the SSH session/terminal closes and comes back after a reboot.
+# If monitoring was on when it went down, it resumes by itself.
+#
+# Install / start:   sudo install -m 644 wifi-capture.service /etc/systemd/system/ \
+#                    && sudo systemctl daemon-reload && sudo systemctl enable --now wifi-capture
+# Status / logs:     systemctl status wifi-capture ; journalctl -u wifi-capture -f
+# Stop for good:     sudo systemctl disable --now wifi-capture
+#
+# Don't also start ./run.sh while the service is running — both want port 5000.
+# Paths are for this machine; edit them if the folder moves.
+
+[Unit]
+Description=WiFi packet capture + live anomaly monitor (mo_app)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/molecule/Wireless_Repo/Wireless-Network-Data-Collection-and-Analysis-System-Backend/mo_app
+ExecStart=/home/molecule/Wireless_Repo/Wireless-Network-Data-Collection-and-Analysis-System-Backend/mo_app/venv/bin/python3 app.py
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

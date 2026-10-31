@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WiFi Anomaly Monitor</title>
+<style>
+  :root {
+    --blue: #2563eb; --green: #16a34a; --amber: #d97706; --red: #dc2626;
+    --gray: #6b7280; --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0; --ink: #1e293b;
+    --mgmt: #93c5fd; --ctrl: #cbd5e1; --data: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--ink); margin: 0; padding: 24px 16px 48px; }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  header h1 { font-size: 22px; margin: 0; }
+  header a { font-size: 13px; color: var(--blue); text-decoration: none; margin-left: auto; }
+  .pill { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: #f1f5f9; color: var(--gray); }
+  .pill.on { background: #dcfce7; color: var(--green); }
+  .pill.warn { background: #fef3c7; color: var(--amber); }
+  .pill.bad { background: #fee2e2; color: var(--red); }
+  .grid { display: grid; gap: 16px; margin-bottom: 16px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g3-1 { grid-template-columns: 2fr 1fr; }
+  .g1-2 { grid-template-columns: 1fr 2fr; }
+  @media (max-width: 900px) { .g2, .g3-1, .g1-2 { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04); min-width: 0; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: #334155; text-transform: uppercase; letter-spacing: .04em; }
+  .muted { color: var(--gray); font-size: 12px; }
+  label { display: block; font-size: 12px; font-weight: 600; margin: 0 0 4px; color: #334155; }
+  input, select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: #fff; }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .row > div { flex: 1; min-width: 0; }
+  button { padding: 9px 14px; font-size: 13px; font-weight: 600; border-radius: 8px; cursor: pointer; border: 1px solid var(--blue); }
+  button.primary { background: var(--blue); color: #fff; }
+  button.secondary { background: #fff; color: var(--blue); }
+  button.danger { background: #fff; color: var(--red); border-color: var(--red); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  details { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+  summary { font-size: 13px; font-weight: 600; cursor: pointer; color: #334155; }
+  .msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
+  .msg.err { color: var(--red); } .msg.ok { color: var(--green); }
+
+  /* Brain Power */
+  .bp { display: flex; gap: 20px; align-items: center; }
+  .ring { --p: 0; width: 132px; height: 132px; border-radius: 50%; flex: 0 0 auto; display: grid; place-items: center;
+          background: conic-gradient(var(--ring-color, var(--blue)) calc(var(--p) * 1%), #e2e8f0 0); }
+  .ring > div { width: 104px; height: 104px; border-radius: 50%; background: #fff; display: grid; place-items: center; text-align: center; }
+  .ring b { font-size: 28px; display: block; line-height: 1; }
+  .ring span { font-size: 11px; color: var(--gray); }
+  .bars { flex: 1; min-width: 0; }
+  .bar { margin-bottom: 10px; }
+  .bar .lbl { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
+  .bar .track { height: 7px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+  .bar .fill { height: 100%; background: var(--blue); width: 0; transition: width .4s; }
+  .bpstats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .bpstats div { background: #f8fafc; border-radius: 8px; padding: 8px; }
+  .bpstats b { display: block; font-size: 15px; }
+
+  /* KPIs */
+  .kpis { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; margin-bottom: 16px; }
+  @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .kpi span { font-size: 11px; color: var(--gray); display: block; }
+  .kpi b { font-size: 22px; }
+  .kpi.alert b { color: var(--red); }
+
+  canvas { width: 100%; height: 180px; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--gray); margin-top: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-weight: 600; color: var(--gray); padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 7px 8px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  .scroll { max-height: 340px; overflow: auto; }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; white-space: nowrap; }
+  .tag.rule { background: #fee2e2; color: var(--red); }
+  .tag.low { background: #f1f5f9; color: var(--gray); }
+  .tag.normal { background: #fef3c7; color: var(--amber); }
+  .tag.info { background: #e0f2fe; color: #0369a1; }
+  .tag.yes { background: #dcfce7; color: var(--green); }
+  .tag.no { background: #fef3c7; color: var(--amber); }
+  .empty { color: var(--gray); font-size: 13px; padding: 18px 0; text-align: center; }
+
+  .heat { display: grid; grid-template-columns: 28px repeat(24, 1fr); gap: 2px; font-size: 10px; color: var(--gray); }
+  .heat div { height: 16px; border-radius: 2px; }
+  .heat .lab { height: auto; text-align: right; padding-right: 4px; line-height: 16px; }
+  .typebar { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+  .typebar .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .typebar .n { font-weight: 600; }
+  .bytype { margin-bottom: 10px; font-size: 12px; }
+  .bytype .t { margin-bottom: 3px; line-height: 1.3; }
+  .bytype .row2 { display: flex; align-items: center; gap: 8px; }
+  .stack { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #e2e8f0; flex: 0 0 90px; }
+  .seg-A { background: #94a3b8; } .seg-B { background: var(--red); } .seg-AB { background: #7c3aed; }
+  .cnt { color: var(--gray); white-space: nowrap; }
+  .cnt b { color: var(--ink); }
+  pre.log { font-size: 11.5px; background: #0f172a; color: #cbd5e1; padding: 10px 12px; border-radius: 8px; max-height: 180px; overflow: auto; margin: 0; white-space: pre-wrap; }
+  .health { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 16px; font-size: 13px; margin-bottom: 12px; }
+  .health span { color: var(--gray); }
+  .banner { display: none; padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 16px; }
+  .banner.show { display: block; }
+  .banner.warn { background: #fef3c7; color: #92400e; }
+  .banner.err { background: #fee2e2; color: #991b1b; }
+
+  /* Training data */
+  .tsec { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+  .tsec h3 { font-size: 13px; margin: 0 0 8px; color: #334155; }
+  .tmodes { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; margin-bottom: 8px; }
+  .tmodes label, .tline label { display: flex; gap: 6px; align-items: center; font-weight: 400; font-size: 13px; margin: 0; }
+  .tmodes input[type=radio], .tline input[type=checkbox] { width: auto; }
+  input.num { width: 70px; padding: 4px 6px; }
+  .tdays { display: grid; grid-template-columns: repeat(auto-fill, minmax(54px, 1fr)); gap: 4px; margin-bottom: 4px; }
+  .tday { border: 1px solid var(--border); border-radius: 8px; padding: 4px 2px; text-align: center; font-size: 11px; color: var(--gray); cursor: pointer; user-select: none; }
+  .tday.on { border-color: var(--blue); background: #eff6ff; color: var(--blue); }
+  .tday .hb { height: 30px; display: flex; align-items: flex-end; justify-content: center; margin: 3px 0; }
+  .tday .hb i { width: 60%; background: currentColor; opacity: .5; border-radius: 2px; }
+  .tday .fl { color: var(--amber); font-size: 10px; min-height: 13px; }
+  .tline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; margin-bottom: 6px; }
+  .tex { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 4px; }
+  .tex button { padding: 3px 8px; font-size: 12px; }
+  .tline input[type=datetime-local], .tline input.reason { width: auto; flex: 1; min-width: 150px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>WiFi Anomaly Monitor</h1>
+    <span class="pill" id="statePill">Stopped</span>
+    <span class="pill" id="sourcePill" hidden></span>
+    <a href="/">← Packet capture</a>
+  </header>
+
+  <div class="banner warn" id="dfsBanner">None of the protected networks has been seen on this channel for the last minute.
+    Channel 100 is a DFS channel — the access points may have moved after detecting radar. Re-scan channels before trusting quiet results.</div>
+  <div class="banner err" id="errBanner"></div>
+
+  <div class="grid g1-2">
+    <div class="card">
+      <h2>Sensor</h2>
+      <div class="row">
+        <div><label for="iface">Interface</label><input id="iface" value="wlx1cbfce71ebe7"></div>
+      </div>
+      <div class="row">
+        <div><label for="channel">Channel</label><input id="channel" value="100"></div>
+        <div><label for="width">Width</label>
+          <select id="width"><option value="HT40+" selected>40 MHz (HT40+)</option><option value="HT40-">40 MHz (HT40-)</option>
+            <option value="HT20">20 MHz (HT20)</option><option value="">20 MHz (no HT)</option></select></div>
+      </div>
+      <div class="row">
+        <button class="primary" id="startBtn">Start monitoring</button>
+        <button class="danger" id="stopBtn" disabled>Stop</button>
+      </div>
+      <div class="muted">Keep channel and width the same as the baseline — changing them changes what "normal" looks like.</div>
+      <div class="msg" id="ctlMsg"></div>
+
+      <details>
+        <summary>Seed the baseline from earlier captures</summary>
+        <div class="muted" style="margin:8px 0">Only import folders recorded with the same channel and width.</div>
+        <div id="dirList" class="muted">Loading…</div>
+        <button class="secondary" id="importBtn" style="margin-top:8px">Import selected</button>
+        <div class="msg" id="importMsg"></div>
+      </details>
+      <details>
+        <summary>Demo without the adapter (replay a recording)</summary>
+        <div class="muted" style="margin:8px 0">Plays a recorded capture back in real time through the same detectors.</div>
+        <select id="replayFile"></select>
+        <button class="secondary" id="replayBtn" style="margin-top:8px">Start replay</button>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Brain Power</h2>
+      <div class="bp">
+        <div class="ring" id="ring"><div><b id="bpVal">–</b><span id="bpLevel">no model yet</span></div></div>
+        <div class="bars">
+          <div class="bar"><div class="lbl"><span>Coverage of the week (50%)</span><span id="covVal">–</span></div>
+            <div class="track"><div class="fill" id="covBar"></div></div></div>
+          <div class="bar"><div class="lbl"><span>Threshold stability (25%)</span><span id="stabVal">–</span></div>
+            <div class="track"><div class="fill" id="stabBar"></div></div></div>
+          <div class="bar"><div class="lbl"><span>False alarms on unseen data (25%)</span><span id="faVal">–</span></div>
+            <div class="track"><div class="fill" id="faBar"></div></div></div>
+          <div class="muted" id="trustLine"></div>
+          <div class="muted">Rule alerts (B) are trusted from day one. Model A becomes trusted at Brain Power ≥ 50%
+            <b>and</b> ≤ 5 false alarms/hour (median over the last 24 h, ≥ 20 h measured), and only loses that after failing for 24 h straight.
+            Seconds flagged by a rule or a trusted model are never learned as normal.</div>
+        </div>
+      </div>
+      <div class="bpstats">
+        <div><span class="muted">Baseline</span><b id="bpHours">–</b></div>
+        <div><span class="muted">Trained on</span><b id="bpTrain">–</b></div>
+        <div><span class="muted">Last retrain</span><b id="bpRetrain">–</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2>Training data (detectors A / B) <span class="pill" id="tPill" hidden>Learning paused</span></h2>
+    <div class="muted" id="tSummary">Loading…</div>
+
+    <div class="tsec">
+      <h3>Use for training</h3>
+      <div class="tmodes">
+        <label><input type="radio" name="tmode" value="roll"> Last <input class="num" id="tDays" type="number" min="7"> days</label>
+        <label><input type="radio" name="tmode" value="pick"> Chosen days</label>
+        <label><input type="radio" name="tmode" value="all"> All data</label>
+      </div>
+      <div class="tdays" id="tDaysGrid"></div>
+      <div class="muted">Click a day to include or leave it out (switches to "Chosen days"). Orange = seconds already flagged that day, never trained on.</div>
+    </div>
+
+    <div class="tsec">
+      <h3>Never train on these periods</h3>
+      <div id="tExList"></div>
+      <div class="tline">
+        <input type="datetime-local" id="tExStart"> <span class="muted">to</span> <input type="datetime-local" id="tExEnd">
+        <input class="reason" id="tExReason" placeholder="Reason, e.g. deauth test on TEST-AP">
+        <button class="secondary" id="tExAdd">Add</button>
+      </div>
+    </div>
+
+    <div class="tsec">
+      <h3>Pause learning</h3>
+      <div class="tline">
+        <span id="tPauseText">Detection keeps running; seconds collected while paused are never trained on.</span>
+      </div>
+      <div class="tline">
+        <button class="secondary" id="tPauseBtn">Pause for</button> <input class="num" id="tPauseHours" type="number" value="2" min="0.5" max="72" step="0.5"> <span class="muted">hours (resumes by itself)</span>
+        <button class="secondary" id="tResumeBtn" hidden>Resume now</button>
+      </div>
+    </div>
+
+    <div class="tsec">
+      <h3>Delete old data <span class="muted" style="font-weight:400" id="tCleanupWhen"></span></h3>
+      <div class="tline"><label><input type="checkbox" id="tRawOn"> Raw frames older than</label>
+        <input class="num" id="tRawDays" type="number" min="7"> <span class="muted">days</span> <span class="muted" id="tRawSize"></span></div>
+      <div class="tline"><label><input type="checkbox" id="tFeatOn"> Per-second features older than</label>
+        <input class="num" id="tFeatDays" type="number" min="7"> <span class="muted">days</span> <span class="muted" id="tFeatSize"></span></div>
+      <div class="muted" id="tWould"></div>
+    </div>
+
+    <div class="tsec">
+      <h3>With this selection</h3>
+      <div class="bpstats" style="margin-top:0">
+        <div><span class="muted">Training data</span><b id="tPrevHours">–</b></div>
+        <div><span class="muted">Week coverage</span><b id="tPrevCov">–</b></div>
+        <div><span class="muted">Days used</span><b id="tPrevDays">–</b></div>
+      </div>
+      <div class="msg" id="tWarn" style="color:var(--amber)"></div>
+      <div class="tline" style="margin-top:6px">
+        <button class="primary" id="tApply">Apply and retrain</button>
+        <button class="secondary" id="tCancel">Cancel</button>
+        <span class="msg" id="tMsg"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><span>Frames / s</span><b id="kFrames">–</b></div>
+    <div class="kpi"><span>Data frames / s</span><b id="kData">–</b></div>
+    <div class="kpi"><span>Encrypted</span><b id="kEnc">–</b></div>
+    <div class="kpi"><span>Retries</span><b id="kRetry">–</b></div>
+    <div class="kpi"><span>Avg signal</span><b id="kSig">–</b></div>
+    <div class="kpi"><span>Transmitters / min</span><b id="kTx">–</b></div>
+    <div class="kpi" id="kAlertBox"><span>Alerts, last hour</span><b id="kAlerts">–</b><span id="kNotices"></span></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h2>Traffic, last 10 minutes</h2>
+      <canvas id="traffic"></canvas>
+      <div class="legend"><span><i style="background:var(--data)"></i>Data</span><span><i style="background:var(--mgmt)"></i>Management</span>
+        <span><i style="background:var(--ctrl)"></i>Control</span><span><i style="background:var(--red)"></i>Deauth</span></div>
+    </div>
+    <div class="card">
+      <h2>Anomaly score (model A)</h2>
+      <canvas id="score"></canvas>
+      <div class="legend"><span><i style="background:var(--blue)"></i>Score</span><span><i style="background:var(--red)"></i>Alert threshold</span></div>
+    </div>
+  </div>
+
+  <div class="grid g3-1">
+    <div class="card">
+      <h2>Alerts</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Time</th><th>Length</th><th>By</th><th>Likely type</th><th>Confidence</th><th>Evidence</th></tr></thead>
+        <tbody id="alertRows"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Alerts by type, 24 h</h2>
+      <div class="legend" style="margin:0 0 10px"><span><i class="seg-A"></i>A (model)</span><span><i class="seg-B"></i>B (rule)</span>
+        <span><i class="seg-AB"></i>A+B (both)</span></div>
+      <div id="typeBars"></div>
+    </div>
+  </div>
+
+  <div class="card" id="pendingCard" hidden style="margin-bottom:16px;border-color:#fca5a5">
+    <h2>New access points waiting for approval</h2>
+    <div class="muted" style="margin-bottom:8px">These BSSIDs announce a protected network name but weren't in the baseline.
+      Each raised <b>one</b> evil-twin alert. Approve only APs your IT team confirms are theirs — until then they are never learned as known.
+      Hints: a real campus AP usually announces several of the protected SSIDs, comes from the same vendor family as the others,
+      and doesn't use a locally-administered (random) MAC.</div>
+    <div class="scroll"><table>
+      <thead><tr><th>BSSID</th><th>SSIDs announced</th><th>Signal</th><th>Heard</th><th>First / last seen</th><th>MAC type</th><th></th></tr></thead>
+      <tbody id="pendingRows"></tbody></table></div>
+    <button class="secondary" id="approveAll" style="margin-top:8px">Approve all listed</button>
+    <span class="msg" id="approveMsg"></span>
+  </div>
+
+  <div class="grid g3-1">
+    <div class="card">
+      <h2>Access points on this channel (last minute)</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>SSID</th><th>BSSID</th><th>Signal</th><th>Beacons/s</th><th>Protected</th><th>In baseline</th></tr></thead>
+        <tbody id="apRows"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Baseline coverage by hour</h2>
+      <div class="heat" id="heat"></div>
+      <div class="muted" style="margin-top:8px">Each cell is one hour of the week; it fills up at 30 minutes of normal traffic.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2>Model C — attack classifier (shadow mode) <span class="pill" id="mcPill">not configured</span></h2>
+    <div class="muted" style="margin-bottom:8px">Runs on the training machine; this sensor sends only the per-second feature numbers.
+      In shadow mode its predictions are logged and counted here but raise no alerts and don't affect detectors A/B.</div>
+    <div class="health" id="mcHealth"></div>
+    <div id="mcAlerts" class="muted"></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h2>Active rules (detector B)</h2>
+      <div id="rules" class="muted">No model yet — import a baseline or let the sensor run.</div>
+    </div>
+    <div class="card">
+      <h2>Sensor health</h2>
+      <div class="health" id="health"></div>
+      <pre class="log" id="log"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmtTime = t => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+const fmtAgo = t => { if (!t) return '–'; const s = Math.round(Date.now() / 1000 - t);
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${(s / 3600).toFixed(1)}h ago`; };
+const fmtDur = s => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${(s / 3600).toFixed(1)}h`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+async function post(url, body) {
+  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+
+function setMsg(el, text, ok) { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); }
+
+$('startBtn').onclick = async () => {
+  $('startBtn').disabled = true; setMsg($('ctlMsg'), 'Starting…', true);
+  try {
+    await post('/api/monitor/start', {interface: $('iface').value, channel: $('channel').value, width: $('width').value});
+    setMsg($('ctlMsg'), 'Monitoring started.', true);
+  } catch (e) { setMsg($('ctlMsg'), e.message, false); $('startBtn').disabled = false; }
+  refresh();
+};
+$('replayBtn').onclick = async () => {
+  try { await post('/api/monitor/start', {replay: $('replayFile').value}); setMsg($('ctlMsg'), 'Replay started.', true); }
+  catch (e) { setMsg($('ctlMsg'), e.message, false); }
+  refresh();
+};
+$('stopBtn').onclick = async () => {
+  $('stopBtn').disabled = true; setMsg($('ctlMsg'), 'Stopping…', true);
+  await post('/api/monitor/stop').catch(() => {});
+  setMsg($('ctlMsg'), 'Stopped.', true); refresh();
+};
+$('importBtn').onclick = async () => {
+  const dirs = [...document.querySelectorAll('#dirList input:checked')].map(i => i.value);
+  if (!dirs.length) return setMsg($('importMsg'), 'Pick at least one folder.', false);
+  $('importBtn').disabled = true; setMsg($('importMsg'), 'Importing — this takes a few seconds per file…', true);
+  try { const d = await post('/api/monitor/import', {dirs}); setMsg($('importMsg'), `Imported ${d.imported_files} files.`, true); }
+  catch (e) { setMsg($('importMsg'), e.message, false); }
+  $('importBtn').disabled = false; loadBaselines(); refresh();
+};
+
+async function approve(bssids) {
+  try { const d = await post('/api/monitor/approve_ap', {bssids}); setMsg($('approveMsg'), `Approved ${d.approved.length}.`, true); }
+  catch (e) { setMsg($('approveMsg'), e.message, false); }
+  refresh();
+}
+$('approveAll').onclick = () => approve([...document.querySelectorAll('#pendingRows [data-b]')].map(b => b.dataset.b));
+document.addEventListener('click', e => { if (e.target.matches('#pendingRows [data-b]')) approve([e.target.dataset.b]); });
+
+async function loadBaselines() {
+  const d = await (await fetch('/api/monitor/baselines')).json();
+  $('dirList').innerHTML = d.dirs.length ? d.dirs.map(x => `<label style="font-weight:400;display:flex;gap:6px;align-items:center;margin:4px 0">
+      <input type="checkbox" value="${esc(x.name)}" style="width:auto" ${x.imported === x.files ? 'disabled' : ''}>
+      ${esc(x.name)} <span class="muted">(${x.files} files${x.imported ? `, ${x.imported} imported` : ''})</span></label>`).join('')
+    : 'No earlier captures found.';
+  $('replayFile').innerHTML = d.replay_files.map(f => `<option>${esc(f)}</option>`).join('');
+}
+
+function canvasCtx(c) {
+  const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  return [ctx, w, h];
+}
+
+function axes(ctx, w, h, max, pad) {
+  ctx.strokeStyle = '#e2e8f0'; ctx.fillStyle = '#94a3b8'; ctx.font = '10px sans-serif'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const y = pad + (h - 2 * pad) * i / 3;
+    ctx.beginPath(); ctx.moveTo(32, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillText((max * (1 - i / 3)).toFixed(max < 3 ? 2 : 0), 0, y + 3);
+  }
+}
+
+function drawTraffic(s) {
+  const [ctx, w, h] = canvasCtx($('traffic')), pad = 8;
+  if (!s.win || !s.win.length) return;
+  const n = s.win.length, x = i => 32 + (w - 32) * i / Math.max(n - 1, 1);
+  const tot = s.win.map((_, i) => s.data[i] + s.mgmt[i] + s.ctrl[i]);
+  const max = Math.max(10, ...tot) * 1.1, y = v => h - pad - (h - 2 * pad) * v / max;
+  axes(ctx, w, h, max, pad);
+  const layers = [['data', '--data'], ['mgmt', '--mgmt'], ['ctrl', '--ctrl']];
+  let base = new Array(n).fill(0);
+  for (const [k, col] of layers) {
+    const top = base.map((b, i) => b + s[k][i]);
+    ctx.beginPath(); top.forEach((v, i) => i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)));
+    for (let i = n - 1; i >= 0; i--) ctx.lineTo(x(i), y(base[i]));
+    ctx.closePath(); ctx.fillStyle = getComputedStyle(document.body).getPropertyValue(col); ctx.fill();
+    base = top;
+  }
+  ctx.fillStyle = '#dc2626';
+  s.deauth.forEach((v, i) => { if (v > 0) ctx.fillRect(x(i) - 1, h - pad - 10, 2, 10); });
+}
+
+function drawScore(s, thr) {
+  const [ctx, w, h] = canvasCtx($('score')), pad = 8;
+  if (!s.a_score || !s.a_score.length) return;
+  const vals = s.a_score.map(v => v == null ? null : v), n = vals.length;
+  const nums = vals.filter(v => v != null);
+  if (!nums.length) { ctx.fillStyle = '#94a3b8'; ctx.font = '12px sans-serif'; ctx.fillText('No model scores yet', 40, h / 2); return; }
+  const lo = Math.min(...nums, thr || 1) * 0.95, hi = Math.max(...nums, thr || 0) * 1.05;
+  const x = i => 32 + (w - 32) * i / Math.max(n - 1, 1), y = v => h - pad - (h - 2 * pad) * (v - lo) / (hi - lo);
+  ctx.strokeStyle = '#e2e8f0'; ctx.fillStyle = '#94a3b8'; ctx.font = '10px sans-serif';
+  [hi, (hi + lo) / 2, lo].forEach(v => { ctx.beginPath(); ctx.moveTo(32, y(v)); ctx.lineTo(w, y(v)); ctx.stroke(); ctx.fillText(v.toFixed(2), 0, y(v) + 3); });
+  ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 1.2; ctx.beginPath(); let pen = false;
+  vals.forEach((v, i) => { if (v == null) { pen = false; return; } pen ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)); pen = true; });
+  ctx.stroke();
+  if (thr) { ctx.strokeStyle = '#dc2626'; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(32, y(thr)); ctx.lineTo(w, y(thr)); ctx.stroke(); ctx.setLineDash([]); }
+}
+
+function heat(grid) {
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  let html = '<div class="lab"></div>' + [...Array(24).keys()].map(h => `<div class="lab" style="text-align:center">${h % 6 ? '' : h}</div>`).join('');
+  grid.forEach((row, d) => {
+    html += `<div class="lab">${days[d]}</div>` + row.map((v, h) =>
+      `<div title="${days[d]} ${h}:00 — ${Math.round(v * 100)}%" style="background:${v ? `rgba(37,99,235,${0.12 + 0.88 * v})` : '#f1f5f9'}"></div>`).join('');
+  });
+  $('heat').innerHTML = html;
+}
+
+function render(st) {
+  const running = st.running, b = st.brain || {};
+  $('statePill').textContent = running ? 'Monitoring' : 'Stopped';
+  $('statePill').className = 'pill ' + (running ? (st.error ? 'bad' : 'on') : '');
+  $('sourcePill').hidden = !running;
+  $('sourcePill').textContent = !running ? '' : st.iface.startsWith('replay:') ? `Replaying ${st.iface.slice(7)}`
+    : `${st.iface} · ch ${st.channel} ${st.width || 'no-HT'}`;
+  $('startBtn').disabled = running; $('replayBtn').disabled = running; $('stopBtn').disabled = !running;
+  $('dfsBanner').classList.toggle('show', !!st.dfs_warning);
+  $('errBanner').textContent = st.error || ''; $('errBanner').classList.toggle('show', !!st.error);
+
+  // Brain Power
+  const p = b.power ?? 0, col = p >= 95 ? 'var(--green)' : p >= 50 ? 'var(--blue)' : 'var(--amber)';
+  $('ring').style.setProperty('--p', p); $('ring').style.setProperty('--ring-color', col);
+  $('bpVal').textContent = st.model_ready ? `${p}%` : '–';
+  $('bpLevel').textContent = st.model_ready ? b.level : 'no model yet';
+  [['cov', b.coverage], ['stab', b.stability], ['fa', b.fa_score]].forEach(([k, v]) => {
+    $(k + 'Val').textContent = v == null ? '–' : `${v}%`; $(k + 'Bar').style.width = `${v || 0}%`; });
+  if (b.fa_events_per_hour != null) $('faVal').textContent = `${b.fa_score}% · median ${b.fa_events_per_hour.toFixed(1)}/h`;
+  $('trustLine').innerHTML = b.a_trusted
+    ? (b.a_distrust_since ? `<b style="color:var(--amber)">Model A trusted — criteria failing since ${fmtAgo(b.a_distrust_since)} (revoked after 24 h)</b>`
+                          : '<b style="color:var(--green)">Model A trusted</b>')
+    : '<b>Model A still learning</b> — its alerts are shown as low confidence and its seconds are still learned.';
+  $('bpHours').textContent = `${b.hours_of_data ?? 0} h`;
+  $('bpTrain').textContent = `${(b.train_windows || 0).toLocaleString()} s`;
+  $('bpTrain').title = `${b.train_policy || ''}${b.learning_paused ? ' · learning paused' : ''}`;
+  $('bpRetrain').textContent = fmtAgo(b.last_retrain) + (b.next_retrain_in != null ? ` · next ${Math.ceil(b.next_retrain_in / 60)}m` : '');
+
+  // KPIs
+  const k = st.kpi || {};
+  $('kFrames').textContent = k.frames_per_s ?? '–'; $('kData').textContent = k.data_per_s ?? '–';
+  $('kEnc').textContent = k.encrypted_pct != null ? `${k.encrypted_pct}%` : '–';
+  $('kRetry').textContent = k.retry_pct != null ? `${k.retry_pct}%` : '–';
+  $('kSig').textContent = k.signal_dbm != null ? `${k.signal_dbm} dBm` : '–';
+  $('kTx').textContent = running ? (k.transmitters_last_min ?? '–') : '–';
+  $('kAlerts').textContent = st.alerts_last_hour ?? 0;
+  $('kNotices').textContent = st.notices_last_hour ? `+ ${st.notices_last_hour} info notices` : '';
+  $('kAlertBox').classList.toggle('alert', (st.alerts_last_hour || 0) > 0);
+
+  drawTraffic(st.series || {});
+  drawScore(st.series || {}, st.detector && st.detector.a_threshold);
+
+  // alerts
+  $('alertRows').innerHTML = (st.alerts || []).length ? st.alerts.map(a => {
+    const conf = a.confidence === 'rule' ? 'rule' : a.confidence === 'info' ? 'info' : a.confidence.startsWith('low') ? 'low' : 'normal';
+    const ev = Object.keys(a.features).length ? Object.entries(a.features).map(([f, v]) => `${f}=${v}`).join(', ') : (a.explain || []).join('; ');
+    return `<tr><td>${fmtTime(a.start)}</td><td>${fmtDur(a.seconds)}</td><td>${a.detector}</td><td>${a.types.map(esc).join('<br>')}</td>
+      <td><span class="tag ${conf}">${esc(a.confidence)}</span></td><td class="muted">${esc(ev)}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">No alerts.</td></tr>';
+
+  const types = Object.entries(st.alerts_by_type_24h || {}), maxT = Math.max(1, ...types.map(([, c]) => c.total));
+  $('typeBars').innerHTML = types.length ? types.map(([t, c]) => {
+    const seg = (n, cls) => n ? `<div class="${cls}" style="width:${100 * n / maxT}%"></div>` : '';
+    const parts = [['A', c.A], ['B', c.B], ['A+B', c['A+B']]].filter(([, n]) => n).map(([k, n]) => `${k} <b>${n}</b>`).join(' · ');
+    return `<div class="bytype"><div class="t">${esc(t)}</div><div class="row2">
+      <div class="stack">${seg(c.A, 'seg-A')}${seg(c.B, 'seg-B')}${seg(c['A+B'], 'seg-AB')}</div>
+      <span class="cnt">${parts} <span style="margin-left:4px">(${c.total})</span></span></div></div>`;
+  }).join('') : '<div class="empty">Nothing in the last 24 hours.</div>';
+
+  // APs
+  $('apRows').innerHTML = (st.aps || []).length ? st.aps.map(a => `<tr><td>${esc(a.ssid || '(hidden)')}</td><td><code>${esc(a.bssid)}</code></td>
+      <td>${a.signal} dBm</td><td>${a.beacons_per_s}</td><td>${a.protected ? '<span class="tag yes">yes</span>' : '<span class="muted">no</span>'}</td>
+      <td>${a.known ? '<span class="tag yes">known</span>' : a.protected ? '<span class="tag rule">NEW</span>' : '<span class="muted">–</span>'}</td></tr>`).join('')
+    : `<tr><td colspan="6" class="empty">${running ? 'No beacons in the last minute.' : 'Start monitoring to see access points.'}</td></tr>`;
+
+  if (b.coverage_grid) heat(b.coverage_grid);
+
+  const mc = st.model_c || {};
+  $('mcPill').textContent = !mc.configured ? 'not configured' : mc.healthy ? 'connected' : 'unreachable';
+  $('mcPill').className = 'pill ' + (!mc.configured ? '' : mc.healthy ? 'on' : 'bad');
+  $('mcHealth').innerHTML = !mc.configured
+    ? '<div><span>Set up</span> /etc/wifi-capture/model_c.json + model_c.token (see ops/model_c.json.example)</div>'
+    : `<div><span>Service</span> ${esc(mc.url)}</div><div><span>Model</span> ${esc(mc.model || '–')} (context ${mc.context_seconds ?? '–'} s)</div>
+       <div><span>Calls</span> ${mc.calls_ok} ok · ${mc.calls_failed} failed · ${mc.dropped} skipped</div>
+       <div><span>Latency</span> ${mc.latency_ms ?? '–'} ms · last ok ${fmtAgo(mc.last_ok)}</div>
+       ${mc.last_error ? `<div style="grid-column:1/-1"><span>Last error</span> ${esc(mc.last_error)} (${fmtAgo(mc.last_error_at)})</div>` : ''}`;
+  const sa = Object.entries(mc.shadow_alerts_24h || {});
+  $('mcAlerts').innerHTML = mc.configured ? (sa.length
+    ? '<b>Would have alerted (24 h):</b> ' + sa.map(([c, n]) => `${esc(c)} ${n}`).join(' · ')
+    : 'No would-be alerts in the last 24 h.') : '';
+
+  const pend = st.pending_aps || [];
+  $('pendingCard').hidden = !pend.length;
+  $('pendingRows').innerHTML = pend.map(p => `<tr><td><code>${esc(p.bssid)}</code></td><td>${p.ssids.map(esc).join(', ')}</td>
+      <td>${p.signal ?? '–'} dBm</td><td>${p.seconds.toLocaleString()} s</td><td>${fmtAgo(p.first_seen)} / ${fmtAgo(p.last_seen)}</td>
+      <td>${p.local_admin ? '<span class="tag rule">random (suspicious)</span>' : 'vendor'}</td>
+      <td><button class="secondary" data-b="${esc(p.bssid)}" style="padding:4px 10px">Approve</button></td></tr>`).join('');
+
+  const d = st.detector;
+  $('rules').innerHTML = d ? `<div style="margin-bottom:8px"><b>Alert on a single occurrence</b></div>` +
+      d.single_occurrence.map(r => `<div class="typebar"><code>${r.feature}</code><span class="t muted">${esc(r.meaning)}</span></div>`).join('') +
+      `<div style="margin:12px 0 8px"><b>Flood limits</b> <span class="muted">(per second, or per window for 10 s / 60 s features)</span></div>` +
+      d.flood_limits.map(r => `<div class="typebar"><code>${r.feature}</code><span class="t muted">${esc(r.meaning)}</span><span class="n">&gt; ${r.limit}</span></div>`).join('') +
+      `<div class="muted" style="margin-top:10px">Every other feature alerts when it rises above 1.2× the highest value seen in the baseline.
+       Protected SSIDs: ${(b.protected_ssids || []).map(esc).join(', ') || '–'}</div>`
+    : 'No model yet — import a baseline or let the sensor run.';
+
+  $('health').innerHTML = `
+    <div><span>Uptime</span> ${running ? fmtDur(st.uptime_s) : '–'}</div>
+    <div><span>Frames captured</span> ${(st.frames_total || 0).toLocaleString()}</div>
+    <div><span>Writing</span> ${esc(st.raw_file || '–')}</div>
+    <div><span>Raw storage</span> ${st.raw_dir_mb} MB</div>
+    <div><span>Disk free</span> ${st.disk_free_gb} GB</div>
+    <div><span>Adapter restarts</span> ${st.restarts || 0}</div>`;
+  $('log').textContent = (st.log || []).join('\n') || 'No events yet.';
+}
+
+// ------------------------------------------------------------ training data
+let T = null, TD = null, tDirty = false;
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const dayStart = d => new Date(d + 'T00:00:00').getTime() / 1000;
+const fmtDT = t => new Date(t * 1000).toLocaleString([], {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'});
+
+function tSelected(day) {
+  if (TD.mode === 'all') return true;
+  if (TD.mode === 'pick') return TD.chosen.includes(day.date);
+  return dayStart(day.date) + 86400 > T.now - TD.days * 86400;
+}
+// don't overwrite a field the user is typing in
+const tVal = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+function tSetDirty() { tDirty = true; setMsg($('tMsg'), 'Not applied yet.', false); renderTraining(); }
+
+function renderTraining() {
+  if (!T) return;
+  $('tPill').hidden = !T.paused;
+  $('tSummary').textContent = `Model trained on ${T.trained_on.toLocaleString()} s (${(T.trained_on / 3600).toFixed(0)} h) · ` +
+    `${T.policy_text} · flagged seconds and excluded periods left out` + (T.paused ? ` · learning paused until ${fmtDT(T.policy.pause_until)}` : '');
+  document.querySelectorAll('input[name=tmode]').forEach(r => r.checked = r.value === TD.mode);
+  tVal('tDays', TD.days);
+  $('tDaysGrid').innerHTML = T.days.map((d, i) => {
+    const on = tSelected(d), h = d.seconds / 3600;
+    return `<div class="tday${on ? ' on' : ''}" data-i="${i}" title="${d.date}: ${h.toFixed(1)} h, ${d.flagged.toLocaleString()} flagged s">
+      ${DAY_NAMES[d.weekday]}<div class="hb"><i style="height:${Math.max(2, h / 24 * 30)}px"></i></div>${d.date.slice(8)}/${d.date.slice(5, 7)}
+      <div class="fl">${d.flagged ? (d.flagged >= 1000 ? (d.flagged / 1000).toFixed(1) + 'k' : d.flagged) : ''}</div></div>`;
+  }).join('') || '<div class="muted">No data yet.</div>';
+  $('tExList').innerHTML = TD.excludes.length ? TD.excludes.map((e, i) =>
+    `<div class="tex"><span>${fmtDT(e.start)} – ${fmtDT(e.end)} · <span class="muted">${esc(e.reason || (e.auto ? 'learning paused' : ''))}</span></span>
+     <button class="danger" data-ex="${i}">Remove</button></div>`).join('') : '<div class="muted" style="margin-bottom:6px">None.</div>';
+  $('tPauseText').textContent = T.paused ? `Paused until ${fmtDT(T.policy.pause_until)}. Detection keeps running.`
+    : 'Detection keeps running; seconds collected while paused are never trained on. Use it during attack tests.';
+  $('tPauseBtn').textContent = T.paused ? 'Extend to' : 'Pause for';
+  $('tResumeBtn').hidden = !T.paused;
+  $('tRawOn').checked = TD.raw_retention.enabled; tVal('tRawDays', TD.raw_retention.days);
+  $('tFeatOn').checked = TD.feat_retention.enabled; tVal('tFeatDays', TD.feat_retention.days);
+  $('tRawSize').textContent = `· now ${(T.raw.bytes / 1e9).toFixed(1)} GB in ${T.raw.files.toLocaleString()} files`;
+  $('tFeatSize').textContent = `· now ${(T.features_bytes / 1e6).toFixed(0)} MB · this is the training data`;
+  const lc = T.last_cleanup;
+  $('tCleanupWhen').textContent = `· runs daily at ${String(T.cleanup_hour).padStart(2, '0')}:00` + (lc ? `, last ${lc.day}` : '');
+  const w = T.would_delete;
+  $('tWould').textContent = tDirty ? 'Apply to see what the next run would delete.'
+    : `Next run would delete ${w.raw_files} raw files (${(w.raw_bytes / 1e9).toFixed(2)} GB)` +
+      (TD.feat_retention.enabled ? ` and ${w.feature_rows.toLocaleString()} feature rows.` : '.') +
+      ' Deleted raw files can\'t be used to rebuild features later.';
+  // preview: same rule as Brain Power coverage (each hour of the week full at 30 min)
+  const grid = Array.from({length: 7}, () => new Array(24).fill(0));
+  let secs = 0, n = 0;
+  T.days.forEach(d => { if (!tSelected(d)) return; n++; secs += d.seconds - d.flagged;
+    d.hour_secs.forEach((c, h) => grid[d.weekday][h] += c); });
+  const cov = grid.flat().reduce((a, c) => a + Math.min(1, c / 1800), 0) / 168 * 100;
+  $('tPrevHours').textContent = `${(secs / 3600).toFixed(0)} h`;
+  $('tPrevCov').textContent = `${cov.toFixed(0)}%`;
+  $('tPrevDays').textContent = `${n} / ${T.days.length}`;
+  $('tWarn').textContent = cov < 99.5 ? `Some hours of the week would have no data: Brain Power coverage drops to ${cov.toFixed(0)}% ` +
+    'and model A sees those hours as unusual.' : '';
+}
+
+async function loadTraining(force) {
+  if (tDirty && !force) return;
+  try { T = await (await fetch('/api/monitor/training')).json(); } catch (e) { return; }
+  TD = JSON.parse(JSON.stringify(T.policy)); tDirty = false;
+  renderTraining();
+}
+
+document.querySelectorAll('input[name=tmode]').forEach(r => r.onchange = () => { TD.mode = r.value;
+  if (r.value === 'pick' && !TD.chosen.length) TD.chosen = T.days.map(d => d.date);
+  tSetDirty(); });
+$('tDays').oninput = () => { TD.days = +$('tDays').value || 0; TD.mode = 'roll'; tSetDirty();
+  if (TD.days < T.min_days) setMsg($('tMsg'), `Use at least ${T.min_days} days (one full week).`, false); };
+$('tDaysGrid').onclick = e => {
+  const el = e.target.closest('.tday'); if (!el) return;
+  if (TD.mode !== 'pick') { TD.chosen = T.days.filter(tSelected).map(d => d.date); TD.mode = 'pick'; }
+  const d = T.days[+el.dataset.i].date;
+  TD.chosen = TD.chosen.includes(d) ? TD.chosen.filter(x => x !== d) : [...TD.chosen, d];
+  tSetDirty();
+};
+$('tExList').onclick = e => { const i = e.target.dataset.ex; if (i === undefined) return; TD.excludes.splice(+i, 1); tSetDirty(); };
+$('tExAdd').onclick = () => {
+  const a = new Date($('tExStart').value).getTime() / 1000, b = new Date($('tExEnd').value).getTime() / 1000;
+  if (!a || !b) return setMsg($('tMsg'), 'Pick a start and an end time.', false);
+  if (b < a) return setMsg($('tMsg'), 'The period ends before it starts.', false);
+  TD.excludes.push({start: Math.floor(a), end: Math.ceil(b), reason: $('tExReason').value.trim()});
+  $('tExStart').value = $('tExEnd').value = $('tExReason').value = '';
+  tSetDirty();
+};
+['tRawOn', 'tRawDays', 'tFeatOn', 'tFeatDays'].forEach(id => $(id).oninput = () => {
+  TD.raw_retention = {enabled: $('tRawOn').checked, days: +$('tRawDays').value};
+  TD.feat_retention = {enabled: $('tFeatOn').checked, days: +$('tFeatDays').value};
+  tSetDirty();
+});
+$('tApply').onclick = async () => {
+  $('tApply').disabled = true; setMsg($('tMsg'), 'Saving and retraining…', true);
+  try { T = await post('/api/monitor/training', TD); TD = JSON.parse(JSON.stringify(T.policy)); tDirty = false;
+    setMsg($('tMsg'), 'Saved. Retraining within a few seconds.', true); renderTraining(); }
+  catch (e) { setMsg($('tMsg'), e.message, false); }
+  $('tApply').disabled = false; refresh();
+};
+$('tCancel').onclick = () => { setMsg($('tMsg'), '', true); loadTraining(true); };
+async function tPause(hours) {
+  if (tDirty) return setMsg($('tMsg'), 'Apply or cancel your changes first.', false);
+  try { T = await post('/api/monitor/training/pause', {hours}); TD = JSON.parse(JSON.stringify(T.policy));
+    setMsg($('tMsg'), hours ? `Learning paused for ${hours} h.` : 'Learning resumed.', true); renderTraining(); }
+  catch (e) { setMsg($('tMsg'), e.message, false); }
+}
+$('tPauseBtn').onclick = () => { const h = +$('tPauseHours').value;
+  if (!(h > 0)) return setMsg($('tMsg'), 'Enter how many hours to pause.', false); tPause(h); };
+$('tResumeBtn').onclick = () => tPause(0);
+
+async function refresh() {
+  try { render(await (await fetch('/api/monitor/status')).json()); } catch (e) { /* server restarting */ }
+}
+loadBaselines();
+refresh();
+setInterval(refresh, 2000);
+loadTraining(); setInterval(loadTraining, 60000);
+window.addEventListener('resize', refresh);
+</script>
+</body>
+</html>

@@ -4,3 +4,8 @@ data/
 logs/
 *.csv
 *.log
+# capture data and local runtime files
+captures/
+*.csv.gz
+*.jsonl
+venv/

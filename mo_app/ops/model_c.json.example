@@ -1,0 +1,4 @@
+{
+  "enabled": true,
+  "url": "http://<hpc-host>:8500"
+}

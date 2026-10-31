@@ -1,0 +1,10 @@
+[Unit]
+Description=Record whether the previous boot ended cleanly or froze (see ops/freeze-watch.sh)
+After=systemd-journald.service systemd-pstore.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/freeze-watch.sh
+
+[Install]
+WantedBy=multi-user.target
