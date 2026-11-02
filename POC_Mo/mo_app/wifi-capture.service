@@ -17,8 +17,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/molecule/Wireless_Repo/Wireless-Network-Data-Collection-and-Analysis-System-Backend/mo_app
-ExecStart=/home/molecule/Wireless_Repo/Wireless-Network-Data-Collection-and-Analysis-System-Backend/mo_app/venv/bin/python3 app.py
+WorkingDirectory=/home/molecule/Wireless_Repo/Wireless-Network-Data-Collection-and-Analysis-System-Backend/POC_Mo/mo_app
+ExecStart=/home/molecule/Wireless_Repo/Wireless-Network-Data-Collection-and-Analysis-System-Backend/POC_Mo/mo_app/venv/bin/python3 app.py
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=10

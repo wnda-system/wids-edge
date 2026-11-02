@@ -14,6 +14,7 @@ venv/
 .claude/
 .env
 *.pcap
-!mo_app/test_vectors/*.pcap
+!POC_Mo/mo_app/test_vectors/*.pcap
+!POC_Mo/mo_app/test_vectors/*.csv
 captures/
 *.token
