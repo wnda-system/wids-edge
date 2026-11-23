@@ -37,7 +37,8 @@ CHUNK_SECONDS = 300          # raw file rotation
 ANALYSIS_EVERY = 5           # seconds between detection passes
 LOOKBACK = 90                # seconds of frames kept for rolling (10 s / 60 s) features
 SETTLE = 3                   # don't judge a second until this many have passed (next-beacon lookahead)
-RETRAIN_EVERY = 600          # seconds
+RETRAIN_EVERY = 3600         # seconds; a fit takes ~1 min on the sensor and runs in the background
+CALIBRATION_DAYS = 7         # newest days of the training data, used only to set A's threshold
 MIN_TRAIN_WINDOWS = 300
 SLOT_TARGET = 1800           # windows (= 30 min) per hour-of-week slot to call it "covered"
 FA_TARGET, FA_WORST = 1.0, 30.0   # alert events/hour mapped to Brain Power FA score 1 .. 0
@@ -411,6 +412,10 @@ class LiveMonitor:
             self._judge(new, df)
             self.model_c.submit(f, new.index)
         self._build_snapshot(df, now)
+        if getattr(self, "_fitted", None) is not None:
+            det, n_rows = self._fitted
+            self._fitted = None
+            self._finish_retrain(det, n_rows)
         if self._retrain_requested or now - self.last_retrain >= RETRAIN_EVERY:
             self._retrain_requested = False
             self._retrain()
@@ -619,7 +624,7 @@ class LiveMonitor:
         if f.empty:
             return None
         feats = [c for c in f.columns if c not in ("win", "file", "a_score", "a_alert", "b_alert")]
-        return f[feats].astype("float32")
+        return f.set_index(f["win"].astype("int64"))[feats].astype("float32")   # index = unix second
 
     # ------------------------------------------------------- training data
     def _poison_intervals(self):
@@ -815,22 +820,50 @@ class LiveMonitor:
             "last_cleanup": self.ctx.get("last_cleanup"), "cleanup_hour": CLEANUP_HOUR,
         }
 
-    def _retrain(self):
+    def _retrain(self, sync=None):
+        """Refit detectors A/B. The fit (~1 min) runs on its own thread while
+        the monitor is running; the next tick swaps the new model in. A's
+        threshold is set on the newest CALIBRATION_DAYS, which it is not
+        fitted on, so it reflects false alarms on unseen traffic."""
+        sync = (not self.running) if sync is None else sync
+        if getattr(self, "_fit_thread", None) is not None and self._fit_thread.is_alive():
+            return
         self.last_retrain = time.time()
         X = self._train_table()
         if X is None or len(X) < MIN_TRAIN_WINDOWS:
             return
         self._record_unseen_interval()
         self._update_trust()
-        det = Detector(X)
-        self.ctx["last_fit"] = self.last_retrain
+        cut = X.index.max() - CALIBRATION_DAYS * 86400
+        if X.index.min() < cut - CALIBRATION_DAYS * 86400:      # >= 2 x 7 days: fit | calibrate
+            fit, cal = X[X.index < cut], X[X.index >= cut]
+        elif X.index.max() - X.index.min() >= 2 * 86400:         # shorter: newest quarter calibrates
+            cut = X.index.min() + 0.75 * (X.index.max() - X.index.min())
+            fit, cal = X[X.index < cut], X[X.index >= cut]
+        else:
+            fit, cal = X, None
+        if sync:
+            self._finish_retrain(Detector(fit, cal), len(X))
+            return
+
+        def work():
+            try:
+                self._fitted = (Detector(fit, cal), len(X))
+            except Exception as e:                      # keep the old model
+                self._log(f"retrain failed: {type(e).__name__}: {e}")
+        self._fit_thread = threading.Thread(target=work, daemon=True)
+        self._fit_thread.start()
+
+    def _finish_retrain(self, det, n_rows):
+        self.ctx["last_fit"] = time.time()
         with self.lock:
-            self.detector, self.feats = det, list(X.columns)
+            self.detector, self.feats = det, list(det.feats)
         hist = self.ctx["retrains"]
         # Brain Power only learns something from a refit on meaningfully MORE
         # data (≥10 %): refitting the same baseline (e.g. after an app restart)
         # is trivially "stable" and would inflate it.
-        if hist and len(X) < 1.1 * hist[-1]["n_train"]:
+        if hist and n_rows < 1.1 * hist[-1]["n_train"]:
+            self._log(f"retrained on {n_rows:,} clean seconds; A threshold {det.thr:.2f}")
             return
         fa = self._fa_rate()
         limits = det.raw_limits()
@@ -840,11 +873,11 @@ class LiveMonitor:
             common = limits.index.intersection(prev.index)
             rel = ((limits[common] - prev[common]).abs() / prev[common].abs().clip(lower=1e-6)).median()
             stability = float(np.clip(1 - rel * 5, 0, 1))    # 20 % median shift -> 0
-        hist.append({"time": self.last_retrain, "n_train": len(X), "limits": limits.round(6).to_dict(),
+        hist.append({"time": self.last_retrain, "n_train": n_rows, "limits": limits.round(6).to_dict(),
                      "stability": stability, "fa_events_per_hour": fa})
         self.ctx["retrains"] = hist[-50:]
         self._save_ctx()
-        self._log(f"retrained on {len(X):,} clean seconds"
+        self._log(f"retrained on {n_rows:,} clean seconds; A threshold {det.thr:.2f} ({det.thr_source})"
                   + (f"; FA on unseen data {fa:.1f}/h" if fa is not None else ""))
 
     def _record_unseen_interval(self):
@@ -1064,7 +1097,7 @@ class LiveMonitor:
         if d is None:
             return None
         from analysis.detector import FLOOD_FLOOR
-        return {"a_threshold": d.thr,
+        return {"a_threshold": d.thr, "a_threshold_source": d.thr_source,
                 "single_occurrence": [{"feature": f, "meaning": HINTS.get(f, f)} for f in d.never_seen],
                 "flood_limits": [{"feature": f, "limit": round(d.flood_limit(f), 2), "meaning": HINTS.get(f, f)}
                                  for f in FLOOD_FLOOR if f in d.feats and f not in d.never_seen]}

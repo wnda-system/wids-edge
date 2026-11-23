@@ -70,7 +70,7 @@ model, thr, med, iqr, z_limit, never_seen = det.model, det.thr, det.med, det.iqr
 b_hits, explain = det.b_hits, det.explain
 
 
-print(f"[3] A) IsolationForest threshold = {thr:.3f} (99.5th pct of train)")
+print(f"[3] A) ensemble threshold = {thr:.3f} ({det.thr_source})")
 print(f"    B) single-occurrence rules: {never_seen}; ARP bindings learned: {len(arp_seed)}")
 print(f"    B) protected SSIDs (evil-twin guarded): {sorted(protected_ssids)}")
 print(f"       transient SSIDs (not guarded): {sorted(transient_ssids)}")
@@ -80,7 +80,7 @@ if test_files:
     fte = pd.concat([windows(load(p), WIN, known_pairs, arp_seed)[0] for p in test_files])
     fte = fte.groupby("file", group_keys=False).apply(lambda x: x.iloc[1:-1])
     Xte = fte[FEATS]
-    te_scores = -model.score_samples(Xte)
+    te_scores = det.scores(Xte)
     a_alert = te_scores > thr
     b_alert = np.array([bool(b_hits(Xte.loc[w])) for w in Xte.index])
     n = len(Xte)
@@ -130,7 +130,7 @@ for name, ch in tests.items():
     row = base.copy()
     for k, v in ch.items():
         row[k] = base[k] + float(v[1:]) if isinstance(v, str) else v
-    a = -model.score_samples(row[FEATS].to_frame().T)[0] > thr
+    a = det.scores(row[FEATS].to_frame().T)[0] > thr
     hits = b_hits(row)
     types = sorted({HINTS[h] for h in hits if h in HINTS})
     print(f"  {name:<30} A={'✓' if a else '✗'}  B={'✓' if hits else '✗'}  → {', '.join(types) or '-'}")
@@ -155,7 +155,7 @@ if test_files:
     # after, so whatever fires during the test is caused by the injected frames.
     X0, _ = windows(base_df, WIN, known_pairs, arp_seed)
     X0 = X0[FEATS]
-    a0 = pd.Series(-model.score_samples(X0) > thr, index=X0.index)
+    a0 = pd.Series(det.scores(X0) > thr, index=X0.index)
     b0 = {w: set(b_hits(X0.loc[w])) for w in X0.index}
     busy = {w for w in X0.index if a0[w] or b0[w]}
     T0 = None
@@ -249,7 +249,7 @@ if test_files:
         t_end = max(r["frame.time_epoch"] for r in rows)
         span = X.loc[int(T0 // WIN): int(t_end // WIN) + 10, FEATS]
         # only count what the injected frames ADDED vs. the same windows without them
-        a = (-model.score_samples(span) > thr) & ~a0.reindex(span.index, fill_value=False).to_numpy()
+        a = (det.scores(span) > thr) & ~a0.reindex(span.index, fill_value=False).to_numpy()
         hits = {w: [h for h in b_hits(span.loc[w]) if h not in b0.get(w, set())] for w in span.index}
         b_win = [w for w, h in hits.items() if h]
         feats_hit = sorted({h for w in b_win for h in hits[w]})
