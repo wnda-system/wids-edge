@@ -109,11 +109,12 @@ def calibrate(scores, wins, target=FA_TARGET):
 
 
 class Detector:
-    def __init__(self, Xtr, Xcal=None):
-        """Xtr: training seconds (B's limits and A's fit). Xcal: later seconds,
-        index = unix second, used only to set A's threshold to <= 1 alarm/h.
-        Without them (too little data yet) the threshold falls back to the
-        99.9th percentile of the training scores."""
+    def __init__(self, Xtr, Xcal=None, Xb=None):
+        """Xtr: seconds model A is fitted on. Xcal: later seconds, index = unix
+        second, used only to set A's threshold to <= 1 alarm/h. Without them
+        (too little data yet) the threshold falls back to the 99.9th
+        percentile of the training scores. Xb: seconds B's limits are learned
+        from (all clean data, incl. the calibration period); default Xtr."""
         self.feats = list(Xtr.columns)
         self.n_train = len(Xtr)
         self.model = Ensemble(Xtr[self.feats])
@@ -123,6 +124,7 @@ class Detector:
         else:
             self.thr = float(np.percentile(self.model.score(Xtr[self.feats]), 99.9))
             self.thr_source = "99.9th percentile of the training scores (too little data to calibrate)"
+        Xtr = Xtr if Xb is None else Xb[self.feats]
         self.med = Xtr.median()
         self.iqr = (Xtr.quantile(0.75) - Xtr.quantile(0.25)).replace(0, np.nan).fillna(Xtr.std()).replace(0, 1)
         # One-sided: attacks add frames/APs/flags, so only an INCREASE alerts.

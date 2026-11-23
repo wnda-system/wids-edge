@@ -416,8 +416,9 @@ class LiveMonitor:
             det, n_rows = self._fitted
             self._fitted = None
             self._finish_retrain(det, n_rows)
-        if self._retrain_requested or now - self.last_retrain >= RETRAIN_EVERY:
-            self._retrain_requested = False
+        busy = getattr(self, "_fit_thread", None) is not None and self._fit_thread.is_alive()
+        if not busy and (self._retrain_requested or now - self.last_retrain >= RETRAIN_EVERY):
+            self._retrain_requested = False     # kept while a fit runs, so an Apply isn't lost
             self._retrain()
         self._daily_cleanup(now)
 
@@ -620,17 +621,24 @@ class LiveMonitor:
         # noisy they would cover almost every second and nothing would ever be
         # learned (what happened live on 2026-10-08: 159 alerts in 25 min).
         # On top of that, only the seconds the training policy selects.
-        f = f[self.train_mask(f["win"].astype("int64").to_numpy())]
+        # Returns (X, a_flag): X = policy-selected seconds minus RULE-flagged
+        # ones; a_flag marks the seconds a trusted model A flagged. Fitting
+        # (A and B) skips a_flag seconds, but A's threshold is calibrated with
+        # them kept: dropping A's own alarms from the calibration week would
+        # under-count false alarms and push the threshold down every hour.
+        w = f["win"].astype("int64").to_numpy()
+        f = f[self._policy_mask(w) & ~_in_intervals(w, self._poison_intervals(("rule",)))]
         if f.empty:
             return None
         feats = [c for c in f.columns if c not in ("win", "file", "a_score", "a_alert", "b_alert")]
-        return f.set_index(f["win"].astype("int64"))[feats].astype("float32")   # index = unix second
+        X = f.set_index(f["win"].astype("int64"))[feats].astype("float32")   # index = unix second
+        return X, _in_intervals(X.index.to_numpy(), self._poison_intervals(("normal",)))
 
     # ------------------------------------------------------- training data
-    def _poison_intervals(self):
-        """Seconds (±5 s) a rule or a trusted model A flagged — never learned."""
+    def _poison_intervals(self, levels=("rule", "normal")):
+        """Seconds (±5 s) a rule ("rule") or a trusted model A ("normal") flagged."""
         return _intervals((a["start"] - 5, a["end"] + 5) for a in self._read_alerts()
-                          if a.get("confidence") in ("rule", "normal"))
+                          if a.get("confidence") in levels)
 
     def _policy_mask(self, wins, now=None):
         """Which seconds the training policy selects (mode + excluded periods)."""
@@ -829,26 +837,32 @@ class LiveMonitor:
         if getattr(self, "_fit_thread", None) is not None and self._fit_thread.is_alive():
             return
         self.last_retrain = time.time()
-        X = self._train_table()
-        if X is None or len(X) < MIN_TRAIN_WINDOWS:
+        T = self._train_table()
+        if T is None:
+            return
+        X, a_flag = T
+        clean = X[~a_flag]                          # what A and B learn
+        if len(clean) < MIN_TRAIN_WINDOWS:
             return
         self._record_unseen_interval()
         self._update_trust()
         cut = X.index.max() - CALIBRATION_DAYS * 86400
         if X.index.min() < cut - CALIBRATION_DAYS * 86400:      # >= 2 x 7 days: fit | calibrate
-            fit, cal = X[X.index < cut], X[X.index >= cut]
+            fit, cal = clean[clean.index < cut], X[X.index >= cut]
         elif X.index.max() - X.index.min() >= 2 * 86400:         # shorter: newest quarter calibrates
             cut = X.index.min() + 0.75 * (X.index.max() - X.index.min())
-            fit, cal = X[X.index < cut], X[X.index >= cut]
+            fit, cal = clean[clean.index < cut], X[X.index >= cut]
         else:
-            fit, cal = X, None
+            fit, cal = clean, None
+        del X
+        n = len(clean)
         if sync:
-            self._finish_retrain(Detector(fit, cal), len(X))
+            self._finish_retrain(Detector(fit, cal, clean), n)
             return
 
         def work():
             try:
-                self._fitted = (Detector(fit, cal), len(X))
+                self._fitted = (Detector(fit, cal, clean), n)
             except Exception as e:                      # keep the old model
                 self._log(f"retrain failed: {type(e).__name__}: {e}")
         self._fit_thread = threading.Thread(target=work, daemon=True)
